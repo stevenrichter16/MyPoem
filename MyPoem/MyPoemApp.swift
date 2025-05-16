@@ -12,7 +12,8 @@ import SwiftData
 struct MyPoemApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Request.self,
+            Response.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,7 +26,13 @@ struct MyPoemApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            let context = sharedModelContainer.mainContext
+            let requestStore = SwiftDataRequestStore(context: context)
+            let responseStore = SwiftDataResponseStore(context: context)
+            
+            TestHarnessView()
+                //.environment(\.requestStore, requestStore)
+                //.environment(\.responseStore, responseStore)
         }
         .modelContainer(sharedModelContainer)
     }
