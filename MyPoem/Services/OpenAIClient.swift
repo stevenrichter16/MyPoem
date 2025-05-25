@@ -11,16 +11,22 @@ import Foundation
 actor OpenAIClient {
   static let shared = OpenAIClient()
 
-  // ⚠️ Put your actual key here, or better yet load from Info.plist / Keychain
-//  private let apiKey: String = {
-//    guard let key = Bundle.main.object(forInfoDictionaryKey: "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") as? String,
-//          !key.isEmpty
-//    else {
-//      fatalError("Missing OpenAI API Key – add OPENAI_API_KEY to your Info.plist")
-//    }
-//    return key
-//  }()
-    private let apiKey = "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"
+    private var apiKey: String
+
+    private init() { // Make init private for singleton
+        // Load the API key from Secrets.plist
+        guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
+              let nsDictionary = NSDictionary(contentsOfFile: path),
+              let key = nsDictionary["OPENAI_API_KEY"] as? String else {
+            fatalError("Missing or invalid OPENAI_API_KEY in Secrets.plist. Please create Secrets.plist (from Secrets.plist.example) and add your key.")
+        }
+        
+        if key.isEmpty || key == "YOUR_API_KEY_GOES_HERE" {
+             fatalError("OPENAI_API_KEY is empty or placeholder in Secrets.plist. Please add your actual key.")
+        }
+        
+        self.apiKey = key
+    }
 
     
 //    "You are an award-winning poet and literary artisan with mastery over every form—from haiku to sonnet, free verse to limerick.  Whenever you receive a user’s topic or phrase, you craft a poem that: 1.Fits the requested form (e.g. haiku = 5-7-5 syllables; sonnet = 14 lines with a volta). 2.Conjures vivid imagery and emotional resonance—use concrete details, sensory language, and unexpected metaphors. 3.Honors the user’s tone preference (e.g. playful, solemn, romantic, whimsical). 4.Keeps lines concise and rhythmically balanced, with gentle variations in meter. 5.Never breaks the form’s rules, and always presents the finished poem as a standalone piece. If the user asks for additional constraints (rhyme scheme, maximum length, specific vocabulary), integrate them seamlessly.  Otherwise, default to a tone that is warm, accessible, and engaging for general readers."
