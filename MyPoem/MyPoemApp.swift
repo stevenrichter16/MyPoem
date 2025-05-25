@@ -27,13 +27,15 @@ struct MyPoemApp: App {
     var body: some Scene {
         WindowGroup {
             let context = sharedModelContainer.mainContext
-            let requestStore = SwiftDataRequestStore(context: context)
-            let responseStore = SwiftDataResponseStore(context: context)
-            
-            TestHarnessView()
-                //.environment(\.requestStore, requestStore)
-                //.environment(\.responseStore, responseStore)
+            let chatStore = ChatService(context: context)
+            MainTabView()
+                
+
         }
         .modelContainer(sharedModelContainer)
+        
+        
+        
+
     }
 }

@@ -12,14 +12,20 @@ import SwiftData
 
 /// Just handles “prompt → API → save”
 /// You can keep this in its own file if you like.
-struct ChatService {
-  let responseStore: ResponseStoring
+final class ChatService: ObservableObject {
+    private let context: ModelContext
 
-  func send(request: Request) async {
+    /// Create your service with the same ModelContext you injected at the top of your app.
+    init(context: ModelContext) {
+        self.context = context
+    }
+
+  /// Send a Request: it will be saved, then the AI call fired, and the Response saved.
+  func send(request: Request) async throws -> Response{
     // build prompt
     let fullPrompt = request.poemType.prompt + request.userInput
 
-    do {
+    
       // call OpenAI
       let aiText = try await OpenAIClient.shared.chatCompletion(
         userPrompt: fullPrompt,
@@ -28,17 +34,18 @@ struct ChatService {
 
       // save the response
       let resp = Response(
-        userId:     "me",
-        content:    aiText,
-        role:       "assistant",
+        id: UUID().uuidString,
+        userId: "me_userid",
+        content: aiText,
+        role: "bot",
         isFavorite: false,
-        requestId:  request.id
+        request: request,
+        hasAnimated: false
       )
-      try responseStore.save(resp)
+      
+      print("RESPONSE in ChatService: \(resp.content)")
+      return resp
+    
 
-    } catch {
-      print("❌ Chat error:", error)
-      // you could save an error-response or set a flag on Request here…
     }
-  }
 }

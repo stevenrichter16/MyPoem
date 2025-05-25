@@ -8,23 +8,25 @@ class Response {
     var content: String
     var role: String
     var isFavorite: Bool
-    var requestId: String?
+    var hasAnimated: Bool
     var dateCreated: Date
-    var hasAnimated: Bool = false
+    
+    @Relationship var request: Request?
 
     init(id: String = UUID().uuidString,
          userId: String,
          content: String,
          role: String,
          isFavorite: Bool,
-         requestId: String? = nil,
+         request: Request,
+         hasAnimated:Bool = false,
          dateCreated: Date = .now) {
         self.id = id
         self.userId = userId
         self.content = content
         self.role = role
         self.isFavorite = isFavorite
-        self.requestId = requestId
+        self.request = request
         self.dateCreated = dateCreated
         self.hasAnimated = hasAnimated
     }

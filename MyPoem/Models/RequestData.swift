@@ -2,13 +2,16 @@ import Foundation
 import SwiftData
 
 @Model
-class Request: Identifiable {
+class Request: Identifiable, ObservableObject {
     @Attribute(.unique) var id: String
     var userInput: String
     var userTopic: String
     var poemType: PoemType
     var temperature: Temperature
     var createdAt: Date
+    
+    @Relationship(deleteRule: .cascade, inverse: \Response.request)
+    var response: Response?
 
     init(id: String = UUID().uuidString,
          userInput: String,
