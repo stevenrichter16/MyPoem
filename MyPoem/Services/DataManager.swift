@@ -54,15 +54,15 @@ class DataManager: ObservableObject {
         do {
             // Load all three tables separately
             var requestDescriptor = FetchDescriptor<RequestEnhanced>()
-            requestDescriptor.sortBy = [SortDescriptor(\RequestEnhanced.createdAt, order: .reverse)]
+            requestDescriptor.sortBy = [SortDescriptor(\RequestEnhanced.createdAt, order: .forward)]
             allRequests = try context.fetch(requestDescriptor)
             
             var responseDescriptor = FetchDescriptor<ResponseEnhanced>()
-            responseDescriptor.sortBy = [SortDescriptor(\ResponseEnhanced.dateCreated, order: .reverse)]
+            responseDescriptor.sortBy = [SortDescriptor(\ResponseEnhanced.dateCreated, order: .forward)]
             allResponses = try context.fetch(responseDescriptor)
             
             var groupDescriptor = FetchDescriptor<PoemGroup>()
-            groupDescriptor.sortBy = [SortDescriptor(\PoemGroup.createdAt, order: .reverse)]
+            groupDescriptor.sortBy = [SortDescriptor(\PoemGroup.createdAt, order: .forward)]
             allPoemGroups = try context.fetch(groupDescriptor)
             
             updateCache()

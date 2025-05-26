@@ -6,6 +6,8 @@ struct MessageHistoryView: View {
     @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var appUiSettings: AppUiSettings
     @EnvironmentObject private var poemCreationState: PoemCreationState
+    @EnvironmentObject private var navigationManager: NavigationManager
+    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     
     @State private var previousRequestCount: Int = 0
     @State private var showJumpToBottom: Bool = false
@@ -42,41 +44,57 @@ struct MessageHistoryView: View {
         VStack {
             Spacer()
             
-            HStack(spacing: 16) {
-                if poemCreationState.isCreatingPoem {
-                    // Loading state
-                    ProgressView()
-                        .scaleEffect(1.2)
-                        .tint(.white)
-                } else {
-                    // Success state
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.white)
-                        .font(.title2)
+            Button(action: {
+                if !poemCreationState.isCreatingPoem {
+                    // Only allow tap when not loading
+                    handleModalTap()
                 }
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    if let poemType = poemCreationState.createdPoemType {
-                        Text(poemCreationState.isCreatingPoem ? "Creating \(poemType.name)..." : "New \(poemType.name) Created!")
-                            .font(.headline)
+            }) {
+                HStack(spacing: 16) {
+                    if poemCreationState.isCreatingPoem {
+                        // Loading state
+                        ProgressView()
+                            .scaleEffect(1.2)
+                            .tint(.white)
+                    } else {
+                        // Success state
+                        Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.white)
-                        
-                        if poemCreationState.isCreatingPoem {
-                            Text("Crafting your poem about \"\(poemCreationState.creationTopic)\"")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.9))
-                                .lineLimit(1)
-                        } else {
-                            Text("Navigate to \(poemType.name) to see your new poem")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.9))
+                            .font(.title2)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let poemType = poemCreationState.createdPoemType {
+                            Text(poemCreationState.isCreatingPoem ? "Creating \(poemType.name)..." : "New \(poemType.name) Created!")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                            
+                            if poemCreationState.isCreatingPoem {
+                                Text("Crafting your poem about \"\(poemCreationState.creationTopic)\"")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .lineLimit(1)
+                            } else {
+                                Text("Tap to see your new \(poemType.name) poem")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.9))
+                            }
                         }
                     }
+                    
+                    Spacer()
+                    
+                    if !poemCreationState.isCreatingPoem {
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.8))
+                    }
                 }
-                
-                Spacer()
+                .padding()
+                .contentShape(Rectangle()) // Make entire area tappable
             }
-            .padding()
+            .buttonStyle(.plain)
+            .disabled(poemCreationState.isCreatingPoem) // Disable tap while loading
             .background(
                 RoundedRectangle(cornerRadius: 16)
                     .fill(
@@ -97,6 +115,30 @@ struct MessageHistoryView: View {
         }
         .animation(.spring(response: 0.5, dampingFraction: 0.8), value: poemCreationState.showCreationModal)
         .animation(.easeInOut(duration: 0.3), value: poemCreationState.isCreatingPoem)
+    }
+    
+    private func handleModalTap() {
+        guard let poemType = poemCreationState.createdPoemType else { return }
+        
+        // Check if we're already viewing this poem type
+        if let currentFilter = poemFilterSettings.activeFilter,
+           currentFilter.id == poemType.id {
+            // Already in the right place, just hide modal
+            poemCreationState.hideModal()
+            return
+        }
+        
+        // Navigate to Browse tab and the specific poem type
+        poemCreationState.navigateToPoemType()
+        
+        // Trigger navigation through NavigationManager
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NotificationCenter.default.post(
+                name: .navigateToPoemType,
+                object: nil,
+                userInfo: ["poemType": poemType]
+            )
+        }
     }
 
     // MARK: - Jump to Bottom Button

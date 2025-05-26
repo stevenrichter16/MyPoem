@@ -15,6 +15,7 @@ struct TestHarnessView: View {
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
     @EnvironmentObject private var poemCreationState: PoemCreationState
+    @EnvironmentObject private var navigationManager: NavigationManager
 
     @State private var selectedPoemType: PoemType = PoemType.all[0]
     @State private var selectedTemperature: Temperature = Temperature.all[0]
@@ -36,6 +37,8 @@ struct TestHarnessView: View {
             MessageHistoryView(requests: filteredRequests)
                 .padding(.bottom, 60) // Space for tab bar
                 .environmentObject(poemCreationState)
+                .environmentObject(navigationManager)
+                .environmentObject(poemFilterSettings)
                 .onAppear {
                     print("Create MessageHistoryView Appear")
                     appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.fullInteractive)

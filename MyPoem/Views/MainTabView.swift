@@ -15,6 +15,7 @@ struct MainTabView: View {
     @StateObject private var appUiSettings = AppUiSettings()
     @StateObject private var navigationManager = NavigationManager()
     @StateObject private var poemCreationState = PoemCreationState()
+    @State private var browseNavigationTarget: PoemType? = nil
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -51,6 +52,23 @@ struct MainTabView: View {
             }
         }
         .ignoresSafeArea(.keyboard) // Prevent tab bar from moving with keyboard
+        .onReceive(NotificationCenter.default.publisher(for: .navigateToPoemType)) { notification in
+            if let poemType = notification.userInfo?["poemType"] as? PoemType {
+                // Switch to Browse tab
+                selectedTab = 1
+                // Set navigation target
+                browseNavigationTarget = poemType
+                
+                // Trigger navigation after tab switch
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    NotificationCenter.default.post(
+                        name: .browseNavigateTo,
+                        object: nil,
+                        userInfo: ["poemType": poemType]
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -157,6 +175,8 @@ struct TabBarButton: View {
 extension Notification.Name {
     static let popToBrowseRoot = Notification.Name("popToBrowseRoot")
     static let scrollToBottom = Notification.Name("scrollToBottom")
+    static let navigateToPoemType = Notification.Name("navigateToPoemType")
+    static let browseNavigateTo = Notification.Name("browseNavigateTo")
 }
 
 // MARK: - Preview

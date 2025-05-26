@@ -50,6 +50,12 @@ struct BrowseView: View {
             // Pop to root when Browse tab is tapped while already on Browse
             navigationPath = NavigationPath()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .browseNavigateTo)) { notification in
+            if let poemType = notification.userInfo?["poemType"] as? PoemType {
+                // Navigate to the specific poem type
+                navigationPath.append(poemType)
+            }
+        }
     }
 }
 
@@ -149,6 +155,7 @@ struct PoemTypeDetailView: View {
     @EnvironmentObject private var appUiSettings: AppUiSettings
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var poemCreationState: PoemCreationState
+    @EnvironmentObject private var navigationManager: NavigationManager
     let poemType: PoemType
     
     private var requests: [RequestEnhanced] {
@@ -160,6 +167,8 @@ struct PoemTypeDetailView: View {
             .navigationTitle(poemType.name)
             .navigationBarTitleDisplayMode(.inline)
             .environmentObject(poemCreationState)
+            .environmentObject(navigationManager)
+            .environmentObject(poemFilterSettings)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Text("\(requests.count) poems")
