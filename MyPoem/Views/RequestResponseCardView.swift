@@ -3,11 +3,11 @@ import SwiftUI
 import SwiftData
 
 struct RequestResponseCardView: View {
-    @Environment(\.modelContext) private var context
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var chatService: ChatService
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
-    @ObservedObject var request: Request
+    @ObservedObject var request: RequestEnhanced
     
     // MARK: - Animation State
     @State private var isCardAnimating: Bool = false
@@ -19,7 +19,10 @@ struct RequestResponseCardView: View {
     @State private var showingActionSheet: Bool = false
     @State private var wasRecentlyTapped: Bool = false
     
-    private let collapsedLineLimit = 6 // Reduced for better mobile experience
+    // Track response state for animations
+    @State private var lastResponseId: String? = nil
+    
+    private let collapsedLineLimit = 6
     private let heightComparisonFudgeFactor: CGFloat = 8.0
     
     // MARK: - Styling Constants
@@ -28,18 +31,7 @@ struct RequestResponseCardView: View {
         static let cardPadding: CGFloat = 12
         static let headerSpacing: CGFloat = 18
         static let contentSpacing: CGFloat = 16
-        static let buttonSize: CGFloat = 42 // Larger touch targets
-        static let iconSize: CGFloat = 20
-        static let shadowRadius: CGFloat = 8
-        static let animationDuration: Double = 0.35
-    }
-    
-    private struct DesignOriginal {
-        static let cardCornerRadius: CGFloat = 16
-        static let cardPadding: CGFloat = 12
-        static let headerSpacing: CGFloat = 18
-        static let contentSpacing: CGFloat = 16
-        static let buttonSize: CGFloat = 42 // Larger touch targets
+        static let buttonSize: CGFloat = 42
         static let iconSize: CGFloat = 20
         static let shadowRadius: CGFloat = 8
         static let animationDuration: Double = 0.35
@@ -52,6 +44,11 @@ struct RequestResponseCardView: View {
         f.timeStyle = .short
         return f
     }()
+    
+    // Computed property to get the response - this will update when DataManager changes
+    private var response: ResponseEnhanced? {
+        dataManager.response(for: request)
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: Design.contentSpacing) {
@@ -67,20 +64,40 @@ struct RequestResponseCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: Design.cardCornerRadius))
         .shadow(color: .black.opacity(0.08), radius: Design.shadowRadius, x: 0, y: 4)
         .padding(.horizontal, 16)
-        .onChange(of: request.response) { newResp in
-            handleResponseChange(newResp)
+        // CRITICAL: Listen to DataManager changes
+        .onReceive(dataManager.$lastResponseUpdate) { _ in
+            handleDataManagerUpdate()
+        }
+        .onReceive(dataManager.$allResponses) { _ in
+            handleDataManagerUpdate()
         }
         .sheet(isPresented: $showingActionSheet) {
             actionSheetContent()
         }
     }
     
+    // MARK: - Data Manager Update Handler
+    private func handleDataManagerUpdate() {
+        let currentResponse = dataManager.response(for: request)
+        let currentResponseId = currentResponse?.id
+        
+        // Check if we got a new response
+        if currentResponseId != lastResponseId {
+            print("🔄 RequestResponseCardView: Response changed from \(lastResponseId ?? "nil") to \(currentResponseId ?? "nil")")
+            
+            if let newResponse = currentResponse, !newResponse.hasAnimated {
+                print("🎬 Starting animation for new response: \(newResponse.id)")
+                startCardAppearAnimation(newResponse)
+            }
+            
+            lastResponseId = currentResponseId
+        }
+    }
+    
     private func provideTapFeedback() {
-        // Haptic feedback
         let impactFeedback = UIImpactFeedbackGenerator(style: .light)
         impactFeedback.impactOccurred()
         
-        // Visual feedback
         wasRecentlyTapped = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             wasRecentlyTapped = false
@@ -95,31 +112,6 @@ struct RequestResponseCardView: View {
                 RoundedRectangle(cornerRadius: Design.cardCornerRadius)
                     .stroke(Color(.quaternaryLabel), lineWidth: 0.5)
             )
-    }
-    
-    // MARK: - Background
-    private var cardBackgroundAlt: some View {
-        RoundedRectangle(cornerRadius: Design.cardCornerRadius)
-            .fill(
-                  Color(.secondarySystemBackground))
-            
-            .overlay(
-                        // Inner shadow - only this animates
-                        RoundedRectangle(cornerRadius: Design.cardCornerRadius - 2)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.black.opacity(wasRecentlyTapped ? 0.06 : 0.0),
-                                        Color.clear
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .allowsHitTesting(false)
-                            .animation(.spring(response: 0.4, dampingFraction: 0.7), value: wasRecentlyTapped)
-                    )
-                    .shadow(color: .black.opacity(0.08), radius: Design.shadowRadius, x: 0, y: 0)
     }
     
     // MARK: - Request Section
@@ -225,18 +217,18 @@ struct RequestResponseCardView: View {
             }
             .buttonStyle(.plain)
             
-            if request.response != nil {
+            if response != nil {
                 Button(action: { favoriteRequest(request: request) }) {
-                    Image(systemName: request.response?.isFavorite == true ? "heart.fill" : "heart")
+                    Image(systemName: response?.isFavorite == true ? "heart.fill" : "heart")
                         .font(.system(size: Design.iconSize, weight: .medium))
-                        .foregroundColor(request.response?.isFavorite == true ? .red : .secondary)
+                        .foregroundColor(response?.isFavorite == true ? .red : .secondary)
                         .frame(width: Design.buttonSize, height: Design.buttonSize)
                         .background(Color(.tertiarySystemBackground))
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .scaleEffect(request.response?.isFavorite == true ? 1.1 : 1.0)
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: request.response?.isFavorite)
+                .scaleEffect(response?.isFavorite == true ? 1.1 : 1.0)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: response?.isFavorite)
             }
         }
     }
@@ -244,7 +236,7 @@ struct RequestResponseCardView: View {
     // MARK: - Response Section
     @ViewBuilder
     private func responseSection() -> some View {
-        if let response = request.response {
+        if let response = response {
             if isCardAnimating {
                 responseContent(for: response)
                     .opacity(showCardContent ? 1 : 0)
@@ -259,7 +251,7 @@ struct RequestResponseCardView: View {
     }
     
     @ViewBuilder
-    private func responseContent(for response: Response) -> some View {
+    private func responseContent(for response: ResponseEnhanced) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             responseText(response.content)
             responseFooter(response)
@@ -276,7 +268,6 @@ struct RequestResponseCardView: View {
                 .foregroundColor(.primary)
                 .lineLimit(isResponseExpanded ? nil : collapsedLineLimit)
                 .multilineTextAlignment(.leading)
-                //.animation(.easeInOut(duration: 0.1), value: isResponseExpanded) // Shorter, smoother animation
                 .background(heightMeasurementOverlay(content: content))
             
             if showExpandCollapseButton {
@@ -331,13 +322,10 @@ struct RequestResponseCardView: View {
                 Image(systemName: isResponseExpanded ? "chevron.up" : "chevron.down")
                     .font(.footnote)
             }
-            //.foregroundColor(.accentColor)
             .foregroundColor(expandButtonColor)
             .padding(.horizontal, 10)
-            //.frame(maxWidth: .infinity)
             .padding(.vertical, 6)
             .background(expandButtonColor.opacity(0.1))
-            //.background(Color.accentColor.opacity(0.1))
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -354,7 +342,7 @@ struct RequestResponseCardView: View {
     }
     
     @ViewBuilder
-    private func responseFooter(_ response: Response) -> some View {
+    private func responseFooter(_ response: ResponseEnhanced) -> some View {
         HStack {
             Spacer()
             
@@ -400,8 +388,6 @@ struct RequestResponseCardView: View {
                 .font(.headline)
                 .padding(.top)
             
-            // Action sheet content would go here
-            
             Button("Dismiss") {
                 showingActionSheet = false
             }
@@ -420,21 +406,7 @@ struct RequestResponseCardView: View {
         }
     }
     
-    private func handleResponseChange(_ newResponse: Response?) {
-        guard let response = newResponse else { return }
-        
-        if response.hasAnimated {
-            isResponseExpanded = false
-            DispatchQueue.main.async {
-                updateExpandButtonVisibility()
-            }
-            return
-        }
-        
-        startCardAppearAnimation(response)
-    }
-    
-    private func startCardAppearAnimation(_ response: Response) {
+    private func startCardAppearAnimation(_ response: ResponseEnhanced) {
         showCardContent = false
         isCardAnimating = true
         isResponseExpanded = false
@@ -448,17 +420,18 @@ struct RequestResponseCardView: View {
                 isCardAnimating = false
                 response.hasAnimated = true
                 
-                guard let context = request.modelContext else { return }
-                context.insert(response)
-                do { try context.save() } catch {
-                    print("Failed to save response after animation: \(error)")
+                do {
+                    try dataManager.save(response: response)
+                    print("✅ Marked response as animated: \(response.id)")
+                } catch {
+                    print("❌ Failed to save response after animation: \(error)")
                 }
             }
         }
     }
     
     // MARK: - Actions
-    private func resendRequest(request: Request, as newPoemType: PoemType? = nil) {
+    private func resendRequest(request: RequestEnhanced, as newPoemType: PoemType? = nil) {
         let poemTypeToUse = newPoemType ?? request.poemType
         
         if let currentFilter = poemFilterSettings.activeFilter,
@@ -466,7 +439,7 @@ struct RequestResponseCardView: View {
             poemFilterSettings.resetFilter()
         }
         
-        let newRequest = Request(
+        let newRequest = RequestEnhanced(
             userInput: request.userInput,
             userTopic: request.userTopic,
             poemType: poemTypeToUse,
@@ -474,8 +447,7 @@ struct RequestResponseCardView: View {
         )
         
         do {
-            context.insert(newRequest)
-            try context.save()
+            try dataManager.save(request: newRequest)
         } catch {
             print("Failed to save new request for resend: \(error)")
             return
@@ -484,293 +456,22 @@ struct RequestResponseCardView: View {
         Task { @MainActor in
             do {
                 let response = try await chatService.send(request: newRequest)
-                newRequest.response = response
-                if response.modelContext == nil {
-                    context.insert(response)
-                }
-                try context.save()
+                print("✅ Successfully resent request and got response: \(response.id)")
             } catch {
-                print("Failed to send or save resent request/response: \(error)")
+                print("❌ Failed to send or save resent request/response: \(error)")
             }
         }
     }
     
-    private func favoriteRequest(request: Request) {
-        guard let response = request.response else { return }
+    private func favoriteRequest(request: RequestEnhanced) {
+        guard let response = dataManager.response(for: request) else { return }
         
         response.isFavorite.toggle()
         do {
-            try context.save()
+            try dataManager.save(response: response)
+            print("✅ Toggled favorite status for response: \(response.id)")
         } catch {
-            print("Failed to save favorite status: \(error)")
+            print("❌ Failed to save favorite status: \(error)")
         }
     }
 }
-
-// MARK: - Preview
-#Preview("Request Response Cards") {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try! ModelContainer(for: Request.self, Response.self, configurations: config)
-    let context = container.mainContext
-    
-    // Create sample data with different poem types and states
-    let samples: [(PoemType, String, String, Bool)] = [
-        (PoemType.all[0], "Write a haiku about mountains", "Silent peaks stand tall,\nSnow-capped guardians of time,\nClouds dance at their feet.", false),
-        (PoemType.all[1], "Write a sonnet about love", "When passion's fire burns bright within the heart,\nAnd gentle whispers float upon the breeze,\nTwo souls unite, no force can tear apart\nThe bond that brings both spirit to its knees.\n\nIn moonlit gardens where the roses bloom,\nSweet promises are made beneath the stars,\nLove conquers all, dispelling doubt and gloom,\nHealing the deepest of emotional scars.", true),
-        (PoemType.all[2], "Write a free verse poem about the ocean", "The endless ocean calls to me with ancient voices,\nWaves crash against the shore in thunderous applause,\nSalt spray dances in the morning light,\nEach droplet a tiny prism reflecting the sun's golden rays.\n\nI stand at the water's edge, feeling the sand between my toes,\nThe rhythmic pulse of tides marking time like a heartbeat,\nEndless blue stretching beyond the horizon,\nWhere sky meets sea in a seamless embrace.", false),
-        (PoemType.all[3], "Write a limerick about cats", "There once was a cat from Peru,\nWho dreamed of sailing the blue,\nHe built a small boat,\nBut it wouldn't float,\nSo he napped in the sun, as cats do.", true),
-        (PoemType.all[4], "Write a ballad about a journey", "Upon a road both long and winding,\nA traveler set forth one day,\nWith hope and dreams forever binding,\nHis heart to find a better way.", false)
-    ]
-    
-    // Create a thinking request (no response yet)
-    let thinkingRequest = Request(
-        userInput: "Write a haiku about rain",
-        userTopic: "rain",
-        poemType: PoemType.all[0],
-        temperature: Temperature.all[0]
-    )
-    
-    for (index, (poemType, userInput, content, isFavorite)) in samples.enumerated() {
-        let request = Request(
-            userInput: userInput,
-            userTopic: userInput.replacingOccurrences(of: "Write a \\w+ (about|to) ", with: "", options: .regularExpression),
-            poemType: poemType,
-            temperature: Temperature.all[index % Temperature.all.count]
-        )
-        
-        let response = Response(
-            userId: "preview-user",
-            content: content,
-            role: "assistant",
-            isFavorite: isFavorite,
-            request: request,
-            hasAnimated: true
-        )
-        
-        request.response = response
-        context.insert(request)
-        context.insert(response)
-    }
-    
-    // Insert thinking request
-    context.insert(thinkingRequest)
-    
-    try! context.save()
-    
-    // Create mock services
-    let chatService = ChatService(context: context)
-    let poemFilterSettings = PoemFilterSettings()
-    let appUiSettings = AppUiSettings()
-    
-    return ScrollView {
-        LazyVStack(spacing: 16) {
-            // Thinking card
-            RequestResponseCardView(request: thinkingRequest)
-            
-            // Various poem cards
-            ForEach(samples.indices, id: \.self) { index in
-                if let request = try? container.mainContext.fetch(FetchDescriptor<Request>())[safe: index] {
-                    RequestResponseCardView(request: request)
-                }
-            }
-        }
-        .padding(.vertical)
-    }
-    .modelContainer(container)
-    .environmentObject(chatService)
-    .environmentObject(poemFilterSettings)
-    .environmentObject(appUiSettings)
-    .background(Color(.systemGroupedBackground))
-    .onAppear {
-        appUiSettings.setCardDisplayContext(displayContext: .fullInteractive)
-    }
-}
-
-//#Preview("Type Filtered Cards") {
-//    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-//    let container = try! ModelContainer(for: Request.self, Response.self, configurations: config)
-//    let context = container.mainContext
-//    
-//    // Create haiku-only samples for type filtered view
-//    let haikuSamples: [(String, String, Bool)] = [
-//        ("mountains", "Silent peaks stand tall,\nSnow-capped guardians of time,\nClouds dance at their feet.", false),
-//        ("ocean waves", "Waves crash on the shore,\nEndless rhythm of the sea,\nPeace in every sound.", true),
-//        ("cherry blossoms", "Pink petals flutter,\nSpring's gentle promise unfolds,\nBeauty brief but true.", false)
-//    ]
-//    
-//    for (topic, content, isFavorite) in haikuSamples {
-//        let request = Request(
-//            userInput: "Write a haiku about \(topic)",
-//            userTopic: topic,
-//            poemType: PoemType.all[0], // Haiku
-//            temperature: Temperature.all[0]
-//        )
-//        
-//        let response = Response(
-//            userId: "preview-user",
-//            content: content,
-//            role: "assistant",
-//            isFavorite: isFavorite,
-//            request: request,
-//            hasAnimated: true
-//        )
-//        
-//        request.response = response
-//        context.insert(request)
-//        context.insert(response)
-//    }
-//    
-//    try! context.save()
-//    
-//    let chatService = ChatService(context: context)
-//    let poemFilterSettings = PoemFilterSettings()
-//    let appUiSettings = AppUiSettings()
-//    
-//    return ScrollView {
-//        LazyVStack(spacing: 16) {
-//            ForEach(container.mainContext.fetch(FetchDescriptor<Request>()), id: \.id) { request in
-//                RequestResponseCardView(request: request)
-//            }
-//        }
-//        .padding(.vertical)
-//    }
-//    .modelContainer(container)
-//    .environmentObject(chatService)
-//    .environmentObject(poemFilterSettings)
-//    .environmentObject(appUiSettings)
-//    .background(Color(.systemGroupedBackground))
-//    .onAppear {
-//        appUiSettings.setCardDisplayContext(displayContext: .typeFiltered)
-//    }
-//}
-
-//#Preview("Single Card - Expanded") {
-//    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-//    let container = try! ModelContainer(for: Request.self, Response.self, configurations: config)
-//    let context = container.mainContext
-//    
-//    let request = Request(
-//        userInput: "Write a free verse poem about a starry night",
-//        userTopic: "starry night",
-//        poemType: PoemType.all[2], // Free verse
-//        temperature: Temperature.all[1]
-//    )
-//    
-//    let longResponse = Response(
-//        userId: "preview-user",
-//        content: """
-//        In the velvet darkness above us,
-//        Stars twinkle like scattered diamonds,
-//        Each one holding ancient secrets,
-//        Whispers of distant galaxies,
-//        Stories older than memory itself.
-//        
-//        The moon hangs like a silver lantern,
-//        Casting ethereal shadows below,
-//        While night creatures sing their lullabies,
-//        And the world settles into peaceful slumber.
-//        
-//        Here beneath this cosmic tapestry,
-//        I am reminded of my place,
-//        Small yet significant,
-//        Connected to the infinite dance
-//        Of light and darkness,
-//        Time and space,
-//        Dreams and reality.
-//        """,
-//        role: "assistant",
-//        isFavorite: true,
-//        request: request,
-//        hasAnimated: true
-//    )
-//    
-//    request.response = longResponse
-//    context.insert(request)
-//    context.insert(longResponse)
-//    
-//    try! context.save()
-//    
-//    let chatService = ChatService(context: context)
-//    let poemFilterSettings = PoemFilterSettings()
-//    let appUiSettings = AppUiSettings()
-//    
-//    return RequestResponseCardView(request: request)
-//        .modelContainer(container)
-//        .environmentObject(chatService)
-//        .environmentObject(poemFilterSettings)
-//        .environmentObject(appUiSettings)
-//        .padding()
-//        .background(Color(.systemGroupedBackground))
-//        .onAppear {
-//            appUiSettings.setCardDisplayContext(displayContext: .fullInteractive)
-//        }
-//}
-//
-//#Preview("Dark Mode Cards") {
-//    let config = ModelConfiguration(isStoredInMemoryOnly: true)
-//    let container = try! ModelContainer(for: Request.self, Response.self, configurations: config)
-//    let context = container.mainContext
-//    
-//    let request = Request(
-//        userInput: "Write a sonnet about moonlight",
-//        userTopic: "moonlight",
-//        poemType: PoemType.all[1], // Sonnet
-//        temperature: Temperature.all[0]
-//    )
-//    
-//    let response = Response(
-//        userId: "preview-user",
-//        content: "Silver streams of moonlight fall,\nThrough windowpanes of midnight blue,\nIlluminating one and all\nWith gentle light, forever true.",
-//        role: "assistant",
-//        isFavorite: false,
-//        request: request,
-//        hasAnimated: true
-//    )
-//    
-//    request.response = response
-//    context.insert(request)
-//    context.insert(response)
-//    
-//    try! context.save()
-//    
-//    let chatService = ChatService(context: context)
-//    let poemFilterSettings = PoemFilterSettings()
-//    let appUiSettings = AppUiSettings()
-//    
-//    return RequestResponseCardView(request: request)
-//        .modelContainer(container)
-//        .environmentObject(chatService)
-//        .environmentObject(poemFilterSettings)
-//        .environmentObject(appUiSettings)
-//        .padding()
-//        .background(Color(.systemGroupedBackground))
-//        .preferredColorScheme(.dark)
-//        .onAppear {
-//            appUiSettings.setCardDisplayContext(displayContext: .fullInteractive)
-//        }
-//}
-
-// MARK: - Safe Array Extension for Preview
-extension Array {
-    subscript(safe index: Index) -> Element? {
-        return indices.contains(index) ? self[index] : nil
-    }
-}
-
-//// MARK: - Size Reading Extension
-//extension View {
-//    func readSize(onChange: @escaping (CGSize) -> Void) -> some View {
-//        background(
-//            GeometryReader { geometry in
-//                Color.clear
-//                    .preference(key: SizePreferenceKey.self, value: geometry.size)
-//            }
-//        )
-//        .onPreferenceChange(SizePreferenceKey.self, perform: onChange)
-//    }
-//}
-//
-//struct SizePreferenceKey: PreferenceKey {
-//    static var defaultValue: CGSize = .zero
-//    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {}
-//}

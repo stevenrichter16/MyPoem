@@ -8,34 +8,18 @@ import SwiftUI
 import SwiftData
 
 struct FavoritesView: View {
-    @Environment(\.modelContext) private var context: ModelContext
-    
-    // Add filter parameter
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     
-    // Query all favorite requests
-    @Query private var allFavoriteRequests: [Request]
-    
     // Computed property for filtered favorites
-    private var filteredFavorites: [Request] {
-        let favorites = allFavoriteRequests.filter { $0.response?.isFavorite == true }
+    private var filteredFavorites: [RequestEnhanced] {
+        let favorites = dataManager.favoriteRequests()
         
         if let filter = poemFilterSettings.activeFilter {
             return favorites.filter { $0.poemType.id == filter.id }
         } else {
             return favorites
         }
-    }
-    
-    init(poemTypeFilter: PoemType? = nil) {
-        // Initialize query with predicate for favorites and sorting
-        self._allFavoriteRequests = Query(
-            filter: #Predicate<Request> { request in
-                request.response?.isFavorite == true
-            },
-            sort: \Request.createdAt,
-            order: .reverse
-        )
     }
 
     var body: some View {
@@ -63,8 +47,8 @@ struct FavoritesView: View {
 
 // A simplified card view for Favorites, no resend options
 struct FavoriteCardView: View {
-    @ObservedObject var request: Request
-    @Environment(\.modelContext) private var context: ModelContext
+    @ObservedObject var request: RequestEnhanced
+    @EnvironmentObject private var dataManager: DataManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -77,8 +61,13 @@ struct FavoriteCardView: View {
                 Button {
                     toggleFavorite()
                 } label: {
-                    Image(systemName: request.response?.isFavorite == true ? "heart.fill" : "heart")
-                        .foregroundColor(request.response?.isFavorite == true ? Color.purple.opacity(0.6) : .gray)
+                    if let response = dataManager.response(for: request) {
+                        Image(systemName: response.isFavorite ? "heart.fill" : "heart")
+                            .foregroundColor(response.isFavorite ? Color.purple.opacity(0.6) : .gray)
+                    } else {
+                        Image(systemName: "heart")
+                            .foregroundColor(.gray)
+                    }
                 }
             }
 
@@ -86,7 +75,7 @@ struct FavoriteCardView: View {
                 .font(.headline)
                 .foregroundColor(.primary)
 
-            if let resp = request.response {
+            if let resp = dataManager.response(for: request) {
                 Text(resp.content)
                     .font(.body)
                     .foregroundColor(.secondary)
@@ -114,71 +103,73 @@ struct FavoriteCardView: View {
     }()
 
     private func toggleFavorite() {
-        guard let resp = request.response else { return }
+        guard let resp = dataManager.response(for: request) else { return }
         resp.isFavorite.toggle()
-        try? context.save()
-    }
-
-    private func deleteRequest() {
-        context.delete(request)
-        try? context.save()
+        
+        do {
+            try dataManager.save(response: resp)
+        } catch {
+            print("Failed to save favorite status: \(error)")
+        }
     }
 }
 
 #Preview {
     let container = try! ModelContainer(
-        for: Request.self, Response.self,
+        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
         configurations: ModelConfiguration(
-            schema: Schema([Request.self, Response.self]),
+            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
             isStoredInMemoryOnly: true
         )
     )
     let context = container.mainContext
+    let dataManager = DataManager(context: context)
 
     // Create mock PoemType and Temperature
     let mockPoemType = PoemType.all[0]
     let mockTemp = Temperature.all[0]
 
     // Create first favorite request + response
-    let req1 = Request(
+    let req1 = RequestEnhanced(
         userInput: "whispers in the trees",
         userTopic: "Nature",
         poemType: mockPoemType,
         temperature: mockTemp
     )
-    let resp1 = Response(
+    let resp1 = ResponseEnhanced(
+        requestId: req1.id,
         userId: "user123",
         content: "Whispers in the trees\nSoftly speak of ancient winds\nEchoes in the leaves.",
         role: "assistant",
         isFavorite: true,
-        request: req1
+        hasAnimated: true
     )
-    req1.response = resp1
+    req1.responseId = resp1.id
 
     // Create second favorite request + response
-    let req2 = Request(
+    let req2 = RequestEnhanced(
         userInput: "ocean lullaby",
         userTopic: "Sea",
         poemType: mockPoemType,
         temperature: mockTemp
     )
-    let resp2 = Response(
+    let resp2 = ResponseEnhanced(
+        requestId: req2.id,
         userId: "user456",
         content: "Waves hum through the night\nCradling moonlight in rhythm\nOcean's lullaby.",
         role: "assistant",
         isFavorite: true,
-        request: req2
+        hasAnimated: true
     )
-    req2.response = resp2
+    req2.responseId = resp2.id
 
-    // Insert into context
-    context.insert(req1)
-    context.insert(resp1)
-    context.insert(req2)
-    context.insert(resp2)
-
-    try! context.save()
+    // Save to DataManager
+    try! dataManager.save(request: req1)
+    try! dataManager.save(response: resp1)
+    try! dataManager.save(request: req2)
+    try! dataManager.save(response: resp2)
 
     return FavoritesView()
-        .modelContainer(container)
+        .environmentObject(dataManager)
+        .environmentObject(PoemFilterSettings())
 }

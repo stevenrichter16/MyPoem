@@ -3,12 +3,11 @@ import SwiftUI
 import SwiftData
 
 struct BrowseView: View {
-    @Environment(\.modelContext) private var context
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
     @EnvironmentObject private var navigationManager: NavigationManager
     @State private var navigationPath = NavigationPath()
-    @Query private var allRequests: [Request]
     
     // Grid layout configuration
     private let columns = [
@@ -23,8 +22,8 @@ struct BrowseView: View {
                     ForEach(PoemType.all, id: \.id) { poemType in
                         PoemTypeTile(
                             poemType: poemType,
-                            requestCount: requestCount(for: poemType),
-                            recentPoem: mostRecentPoem(for: poemType)
+                            requestCount: dataManager.requestCount(for: poemType),
+                            recentPoem: dataManager.mostRecentRequest(for: poemType)
                         )
                     }
                 }
@@ -50,25 +49,15 @@ struct BrowseView: View {
             navigationPath = NavigationPath()
         }
     }
-    // MARK: - Helper Methods
-    
-    private func requestCount(for poemType: PoemType) -> Int {
-        allRequests.filter { $0.poemType.id == poemType.id }.count
-    }
-    
-    private func mostRecentPoem(for poemType: PoemType) -> Request? {
-        allRequests
-            .filter { $0.poemType.id == poemType.id }
-            .sorted { $0.createdAt > $1.createdAt }
-            .first
-    }
 }
 
 // MARK: - Poem Type Tile
 struct PoemTypeTile: View {
     let poemType: PoemType
     let requestCount: Int
-    let recentPoem: Request?
+    let recentPoem: RequestEnhanced?
+    
+    @EnvironmentObject private var dataManager: DataManager
     
     var body: some View {
         NavigationLink(value: poemType) {
@@ -96,7 +85,8 @@ struct PoemTypeTile: View {
                         .fontWeight(.bold)
                         .foregroundColor(.white)
                     
-                    if let recent = recentPoem, let response = recent.response {
+                    if let recent = recentPoem,
+                       let response = dataManager.response(for: recent) {
                         Text(response.content)
                             .font(.caption)
                             .foregroundColor(.white.opacity(0.8))
@@ -153,22 +143,12 @@ struct PoemTypeTile: View {
 
 // MARK: - Poem Type Detail View
 struct PoemTypeDetailView: View {
-    @Environment(\.modelContext) private var context
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var appUiSettings: AppUiSettings
     let poemType: PoemType
     
-    @Query private var requests: [Request]
-    
-    init(poemType: PoemType) {
-        self.poemType = poemType
-        // Filter requests for this specific poem type
-        self._requests = Query(
-            filter: #Predicate<Request> { request in
-                request.poemType.id == poemType.id
-            },
-            sort: \Request.createdAt,
-            order: .reverse
-        )
+    private var requests: [RequestEnhanced] {
+        dataManager.requests(for: poemType)
     }
     
     var body: some View {
@@ -195,20 +175,19 @@ struct PoemTypeDetailView: View {
                 print("PoemTypeDetailView Disappear")
             }
     }
-    
-
 }
 
 // MARK: - Preview
 #Preview("Browse View") {
     let container = try! ModelContainer(
-        for: Request.self, Response.self,
+        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
         configurations: ModelConfiguration(
-            schema: Schema([Request.self, Response.self]),
+            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
             isStoredInMemoryOnly: true
         )
     )
     let context = container.mainContext
+    let dataManager = DataManager(context: context)
     
     // Create sample data for different poem types
     let samples: [(PoemType, String, String)] = [
@@ -218,41 +197,47 @@ struct PoemTypeDetailView: View {
     ]
     
     for (poemType, topic, content) in samples {
-        let req = Request(
+        let req = RequestEnhanced(
             userInput: topic,
             userTopic: topic,
             poemType: poemType,
             temperature: Temperature.all[0]
         )
-        let resp = Response(
+        let resp = ResponseEnhanced(
+            requestId: req.id,
             userId: "test-user",
             content: content,
             role: "assistant",
             isFavorite: false,
-            request: req
+            hasAnimated: true
         )
-        req.response = resp
-        context.insert(req)
-        context.insert(resp)
+        req.responseId = resp.id
+        
+        try! dataManager.save(request: req)
+        try! dataManager.save(response: resp)
     }
     
-    try! context.save()
-    
     return BrowseView()
-        .modelContainer(container)
+        .environmentObject(dataManager)
         .environmentObject(PoemFilterSettings())
+        .environmentObject(AppUiSettings())
+        .environmentObject(NavigationManager())
 }
 
 #Preview("Empty Browse View") {
     let container = try! ModelContainer(
-        for: Request.self, Response.self,
+        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
         configurations: ModelConfiguration(
-            schema: Schema([Request.self, Response.self]),
+            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
             isStoredInMemoryOnly: true
         )
     )
+    let context = container.mainContext
+    let dataManager = DataManager(context: context)
     
     return BrowseView()
-        .modelContainer(container)
+        .environmentObject(dataManager)
         .environmentObject(PoemFilterSettings())
+        .environmentObject(AppUiSettings())
+        .environmentObject(NavigationManager())
 }

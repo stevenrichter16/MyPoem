@@ -6,46 +6,43 @@
 //
 
 import Foundation
-
-import Foundation
 import SwiftData
 
-/// Just handles “prompt → API → save”
-/// You can keep this in its own file if you like.
+/// Handles "prompt → API → save" using DataManager
 final class ChatService: ObservableObject {
-    private let context: ModelContext
+    private let dataManager: DataManager
 
-    /// Create your service with the same ModelContext you injected at the top of your app.
-    init(context: ModelContext) {
-        self.context = context
+    init(dataManager: DataManager) {
+        self.dataManager = dataManager
     }
 
-  /// Send a Request: it will be saved, then the AI call fired, and the Response saved.
-  func send(request: Request) async throws -> Response{
-    // build prompt
-    let fullPrompt = request.poemType.prompt + request.userInput
+    /// Send a Request: it will be saved, then the AI call fired, and the Response saved.
+    func send(request: RequestEnhanced) async throws -> ResponseEnhanced {
+        // Build prompt
+        let fullPrompt = request.poemType.prompt + request.userInput
 
-    
-      // call OpenAI
-      let aiText = try await OpenAIClient.shared.chatCompletion(
-        userPrompt: fullPrompt,
-        temperature: request.temperature.value
-      )
+        // Call OpenAI
+        let aiText = try await OpenAIClient.shared.chatCompletion(
+            userPrompt: fullPrompt,
+            temperature: request.temperature.value
+        )
 
-      // save the response
-      let resp = Response(
-        id: UUID().uuidString,
-        userId: "me_userid",
-        content: aiText,
-        role: "bot",
-        isFavorite: false,
-        request: request,
-        hasAnimated: false
-      )
-      
-      print("RESPONSE in ChatService: \(resp.content)")
-      return resp
-    
-
+        // Create the response
+        let response = ResponseEnhanced(
+            requestId: request.id,
+            userId: "me_userid",
+            content: aiText,
+            role: "bot",
+            isFavorite: false,
+            hasAnimated: false
+        )
+        
+        // Save the response and link it to the request
+        try await dataManager.save(response: response)
+        request.responseId = response.id
+        try await dataManager.save(request: request)
+        
+        print("RESPONSE in ChatService: \(response.content)")
+        return response
     }
 }

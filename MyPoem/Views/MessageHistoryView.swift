@@ -3,15 +3,15 @@ import SwiftUI
 import SwiftData
 
 struct MessageHistoryView: View {
-    @Environment(\.modelContext) private var context
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var appUiSettings: AppUiSettings
     
     @State private var previousRequestCount: Int = 0
     @State private var showJumpToBottom: Bool = false
     
-    let requests: [Request]
+    let requests: [RequestEnhanced]
     
-    init(requests: [Request] = []) {
+    init(requests: [RequestEnhanced] = []) {
         self.requests = requests
     }
     
@@ -39,21 +39,8 @@ struct MessageHistoryView: View {
             Image(systemName: "arrow.down.circle.fill")
                 .font(.title2)
                 .foregroundColor(.white)
-//                .background(
-//                    Circle()
-//                        .fill(Color.accentColor.opacity(0.9))
-//                        .frame(width: 44, height: 44)
-//                )
                 .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
         }
-//        .frame(width: 44, height: 44)
-//        .padding(.trailing, 16)
-//        .padding(.bottom, 100)
-//        .transition(.asymmetric(
-//            insertion: .scale(scale: 0.8).combined(with: .opacity),
-//            removal: .scale(scale: 0.8).combined(with: .opacity)
-//        ))
-//        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: showJumpToBottom)
     }
     
     private func jumpToBottom(proxy: ScrollViewProxy) {
@@ -67,7 +54,7 @@ struct MessageHistoryView: View {
     // MARK: - Subviews and Helpers
 
     private struct MessageRow: View {
-        let request: Request
+        let request: RequestEnhanced
         var onDelete: () -> Void
 
         var body: some View {
@@ -90,37 +77,11 @@ struct MessageHistoryView: View {
             ForEach(requests, id: \.id) { req in
                 MessageRow(request: req, onDelete: { deleteRequest(request: req) })
             }
-            
-//            // Invisible detector at the bottom
-//            Color.clear
-//                .frame(height: 0)
-//                .id("bottom-detector")
-//                .onAppear {
-//                    // User can see the bottom, hide button
-//                    if showJumpToBottom {
-//                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-//                            showJumpToBottom = false
-//                        }
-//                    }
-//                }
-//                .onDisappear {
-//                    // User scrolled away from bottom, show button
-//                    if !showJumpToBottom && requests.count > 5 { // Only show if there's content to scroll to
-//                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
-//                            showJumpToBottom = true
-//                        }
-//                    }
-//                }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.clear)
         .onChange(of: requests.count) { oldCount, newCount in
-            // Hide jump button when new content arrives
-//            if newCount > previousRequestCount {
-//                showJumpToBottom = false
-//            }
-            
             // Scroll to bottom for new messages
             if newCount > previousRequestCount {
                 Task { @MainActor in
@@ -161,8 +122,11 @@ struct MessageHistoryView: View {
         }
     }
 
-    private func deleteRequest(request: Request) {
-        context.delete(request)
-        try? context.save()
+    private func deleteRequest(request: RequestEnhanced) {
+        do {
+            try dataManager.delete(request: request)
+        } catch {
+            print("Failed to delete request: \(error)")
+        }
     }
 }

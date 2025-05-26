@@ -8,15 +8,14 @@ import SwiftUI
 import SwiftData
 
 struct MainTabView: View {
-    @Environment(\.modelContext) private var context: ModelContext
+    @EnvironmentObject private var dataManager: DataManager
+    @EnvironmentObject private var chatService: ChatService
     @State private var selectedTab = 0
     @StateObject private var poemFilterSettings = PoemFilterSettings()
     @StateObject private var appUiSettings = AppUiSettings()
     @StateObject private var navigationManager = NavigationManager()
     
     var body: some View {
-        let chatService = ChatService(context: context)
-        
         ZStack(alignment: .bottom) {
             // Main content area
             Group {
@@ -35,6 +34,7 @@ struct MainTabView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environmentObject(appUiSettings)
             .environmentObject(poemFilterSettings)
+            .environmentObject(dataManager)
             .environmentObject(chatService)
             .environmentObject(navigationManager)
             
@@ -44,14 +44,7 @@ struct MainTabView: View {
                 CustomTabBar(selectedTab: $selectedTab)
             }
         }
-        
         .ignoresSafeArea(.keyboard) // Prevent tab bar from moving with keyboard
-//        .onChange(of: navigationManager.selectedTab) { _, newTab in
-//            if newTab == 1 {
-//                navigationManager.popToBrowseRoot()
-//            }
-//            
-//        }
     }
 }
 
@@ -101,17 +94,6 @@ struct CustomTabBar: View {
         .padding(.top, 12)
         .padding(.bottom, 8)
         .frame(maxHeight: 55)
-//        .background(
-//            Rectangle()
-//                .fill(Color(.systemBackground))
-//                .shadow(color: .black.opacity(0.1), radius: 8, x: 0, y: -2)
-//                .overlay(
-//                    Rectangle()
-//                        .stroke(Color(.quaternaryLabel), lineWidth: 0.5)
-//                        .frame(height: 0.5),
-//                    alignment: .top
-//                )
-//        )
         .ignoresSafeArea(edges: .bottom) // Extend to bottom edge
     }
 }
@@ -149,12 +131,6 @@ struct TabBarButton: View {
                         .scaleEffect(isSelected ? 1.1 : 1.0)
                         .scaleEffect(isPressed ? 0.9 : 1.0)
                 }
-                
-                // Small indicator dot when selected
-//                Circle()
-//                    .fill(isSelected ? color : Color.clear)
-//                    .frame(width: 4, height: 4)
-//                    .scaleEffect(isSelected ? 1.0 : 0.1)
             }
             .frame(width: 80, height: 60) // Set visual frame size
             .contentShape(Rectangle()) // Make entire rectangular area tappable
@@ -180,93 +156,60 @@ extension Notification.Name {
 // MARK: - Preview
 #Preview {
     let container = try! ModelContainer(
-        for: Request.self, Response.self,
+        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
         configurations: ModelConfiguration(
-            schema: Schema([Request.self, Response.self]),
+            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
             isStoredInMemoryOnly: true
         )
     )
     let context = container.mainContext
+    let dataManager = DataManager(context: context)
+    let chatService = ChatService(dataManager: dataManager)
 
     // Sample data for preview
     let mockPoemType = PoemType.all[0]
     let mockTemp = Temperature.all[0]
 
-    let favoriteReq = Request(
+    let favoriteReq = RequestEnhanced(
         userInput: "a silent lake",
         userTopic: "Nature",
         poemType: mockPoemType,
         temperature: mockTemp
     )
-    let favoriteResp = Response(
+    let favoriteResp = ResponseEnhanced(
+        requestId: favoriteReq.id,
         userId: "previewer",
         content: "Still water reflects\nWhispers of wind and moonlight\nTime sleeps on the shore.",
         role: "assistant",
         isFavorite: true,
-        request: favoriteReq,
         hasAnimated: true
     )
-    favoriteReq.response = favoriteResp
+    favoriteReq.responseId = favoriteResp.id
 
-    let recentReq = Request(
+    let recentReq = RequestEnhanced(
         userInput: "a rainy night",
         userTopic: "Weather",
         poemType: mockPoemType,
         temperature: mockTemp
     )
-    let recentResp = Response(
+    let recentResp = ResponseEnhanced(
+        requestId: recentReq.id,
         userId: "previewer",
         content: "Raindrops tap the glass\nMidnight murmurs in the dark\nDreams bloom in the hush.",
         role: "assistant",
         isFavorite: false,
-        request: recentReq,
         hasAnimated: true
     )
-    
-    let recentReq2 = Request(
-        userInput: "a rainy night",
-        userTopic: "Weather",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let recentResp2 = Response(
-        userId: "previewer",
-        content: "Raindrops tap the glass\nMidnight murmurs in the dark\nDreams bloom in the hush.",
-        role: "assistant",
-        isFavorite: false,
-        request: recentReq2,
-        hasAnimated: true
-    )
-    
-    let recentReq3 = Request(
-        userInput: "a rainy night",
-        userTopic: "Weather",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let recentResp3 = Response(
-        userId: "previewer",
-        content: "Raindrops tap the glass\nMidnight murmurs in the dark\nDreams bloom in the hush.",
-        role: "assistant",
-        isFavorite: false,
-        request: recentReq3,
-        hasAnimated: true
-    )
-    recentReq.response = recentResp
+    recentReq.responseId = recentResp.id
 
-    context.insert(favoriteReq)
-    context.insert(favoriteResp)
-    context.insert(recentReq)
-    context.insert(recentResp)
-    context.insert(recentReq2)
-    context.insert(recentResp2)
-    context.insert(recentReq3)
-    context.insert(recentResp3)
-
-    try! context.save()
+    try! dataManager.save(request: favoriteReq)
+    try! dataManager.save(response: favoriteResp)
+    try! dataManager.save(request: recentReq)
+    try! dataManager.save(response: recentResp)
 
     return MainTabView()
-        .modelContainer(container)
+        .environmentObject(dataManager)
+        .environmentObject(chatService)
 }
 
 #Preview("Tab Bar Only") {

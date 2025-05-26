@@ -12,8 +12,9 @@ import SwiftData
 struct MyPoemApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Request.self,
-            Response.self
+            RequestEnhanced.self,
+            ResponseEnhanced.self,
+            PoemGroup.self
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -27,15 +28,13 @@ struct MyPoemApp: App {
     var body: some Scene {
         WindowGroup {
             let context = sharedModelContainer.mainContext
-            let chatStore = ChatService(context: context)
+            let dataManager = DataManager(context: context)
+            let chatService = ChatService(dataManager: dataManager)
+            
             MainTabView()
-                
-
+                .environmentObject(dataManager)
+                .environmentObject(chatService)
         }
         .modelContainer(sharedModelContainer)
-        
-        
-        
-
     }
 }

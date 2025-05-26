@@ -10,7 +10,7 @@ import SwiftUI
 import SwiftData
 
 struct TestHarnessView: View {
-    @Environment(\.modelContext) private var context: ModelContext
+    @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var chatService: ChatService
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
@@ -20,20 +20,13 @@ struct TestHarnessView: View {
     @State private var showingComposer = false
     @State private var previousRequestCount: Int = 0
     
-    // Filtered query based on the poem type filter
-    @Query private var allRequests: [Request]
-    
     // Computed property for filtered requests
-    private var filteredRequests: [Request] {
+    private var filteredRequests: [RequestEnhanced] {
         if let filter = poemFilterSettings.activeFilter {
-            return allRequests.filter { $0.poemType.id == filter.id }
+            return dataManager.requests(for: filter)
         } else {
-            return allRequests
+            return dataManager.allRequests
         }
-    }
-    
-    init() {
-        self._allRequests = Query(sort: \Request.createdAt, order: .forward)
     }
 
     var body: some View {
@@ -95,7 +88,7 @@ struct TestHarnessView: View {
             poemFilterSettings.resetFilter()
         }
         
-        let req = Request(
+        let req = RequestEnhanced(
             userInput: topic,
             userTopic: topic,
             poemType: selectedPoemType,
@@ -103,8 +96,7 @@ struct TestHarnessView: View {
         )
         
         do {
-            context.insert(req)
-            try context.save()
+            try dataManager.save(request: req)
         } catch {
             print("Failed to save request: \(error)")
             return
@@ -113,44 +105,26 @@ struct TestHarnessView: View {
         Task { @MainActor in
             do {
                 let resp = try await chatService.send(request: req)
-                
-                if #available(iOS 18, *) {
-                    resp.request = req
-                    req.response = resp
-                    context.insert(resp)
-                    try context.save()
-                } else {
-                    context.insert(resp)
-                    try context.save()
-                    
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                    
-                    resp.request = req
-                    req.response = resp
-                    
-                    try context.save()
-                    context.insert(req)
-                    try context.save()
-                }
+                print("Successfully created and saved response: \(resp.id)")
             } catch {
                 print("Failed to send or save request/response: \(error)")
             }
         }
     }
 }
-// MARK: – Preview
 
 // MARK: – Preview
 #Preview("Test Harness with FAB") {
     let container = try! ModelContainer(
-        for: Request.self, Response.self,
+        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
         configurations: ModelConfiguration(
-            schema: Schema([Request.self, Response.self]),
+            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
             isStoredInMemoryOnly: true
         )
     )
     let context = container.mainContext
-    let chatService = ChatService(context: context)
+    let dataManager = DataManager(context: context)
+    let chatService = ChatService(dataManager: dataManager)
     let appUiSettings = AppUiSettings()
     
     // Create sample data with variety of poem types
@@ -164,97 +138,29 @@ struct TestHarnessView: View {
     ]
     
     for (poemType, topic, content) in samples {
-        let req = Request(
+        let req = RequestEnhanced(
             userInput: topic,
             userTopic: topic,
             poemType: poemType,
             temperature: Temperature.all[0]
         )
-        let resp = Response(
+        let resp = ResponseEnhanced(
+            requestId: req.id,
             userId: "preview-user",
             content: content,
             role: "assistant",
             isFavorite: [true, false].randomElement() ?? false, // Mix of favorited and regular
-            request: req,
             hasAnimated: true
         )
-        req.response = resp
-        context.insert(req)
-        context.insert(resp)
+        req.responseId = resp.id
+        
+        try! dataManager.save(request: req)
+        try! dataManager.save(response: resp)
     }
     
-    try! context.save()
-    
     return TestHarnessView()
-        .modelContainer(container)
+        .environmentObject(dataManager)
         .environmentObject(chatService)
         .environmentObject(PoemFilterSettings())
         .environmentObject(appUiSettings)
 }
-
-//#Preview("Empty Test Harness") {
-//    let container = try! ModelContainer(
-//        for: Request.self, Response.self,
-//        configurations: ModelConfiguration(
-//            schema: Schema([Request.self, Response.self]),
-//            isStoredInMemoryOnly: true
-//        )
-//    )
-//    let context = container.mainContext
-//    let chatService = ChatService(context: context)
-//    let appUiSettings = AppUiSettings()
-//    
-//    return TestHarnessView()
-//        .modelContainer(container)
-//        .environmentObject(chatService)
-//        .environmentObject(PoemFilterSettings())
-//        .environmentObject(appUiSettings)
-//}
-
-//#Preview("Test Harness - Dark Mode") {
-//    let container = try! ModelContainer(
-//        for: Request.self, Response.self,
-//        configurations: ModelConfiguration(
-//            schema: Schema([Request.self, Response.self]),
-//            isStoredInMemoryOnly: true
-//        )
-//    )
-//    let context = container.mainContext
-//    let chatService = ChatService(context: context)
-//    let appUiSettings = AppUiSettings()
-//    
-//    // Create a few sample poems
-//    let samples: [(PoemType, String, String)] = [
-//        (PoemType.all[0], "moonlight", "Silver light descends,\nQuiet shadows dance below,\nNight's gentle embrace."),
-//        (PoemType.all[1], "city lights", "Neon streams through urban canyons,\nPulse of life in glass and steel,\nDreams echo in the midnight air."),
-//    ]
-//    
-//    for (poemType, topic, content) in samples {
-//        let req = Request(
-//            userInput: topic,
-//            userTopic: topic,
-//            poemType: poemType,
-//            temperature: Temperature.all[1]
-//        )
-//        let resp = Response(
-//            userId: "preview-user",
-//            content: content,
-//            role: "assistant",
-//            isFavorite: false,
-//            request: req,
-//            hasAnimated: true
-//        )
-//        req.response = resp
-//        context.insert(req)
-//        context.insert(resp)
-//    }
-//    
-//    try! context.save()
-//    
-//    return TestHarnessView()
-//        .modelContainer(container)
-//        .environmentObject(chatService)
-//        .environmentObject(PoemFilterSettings())
-//        .environmentObject(appUiSettings)
-//        .preferredColorScheme(.dark)
-//}
