@@ -7,6 +7,6 @@
 
 enum CardDisplayContext {
     case fullInteractive    // Normal create tab - all buttons work
-    case typeFiltered      // Browse detail view - no type changing
     case favoritesOnly     // Favorites tab - maybe limited actions
+    // Removed typeFiltered as it's no longer needed
 }

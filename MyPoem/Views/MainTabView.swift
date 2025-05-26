@@ -14,6 +14,7 @@ struct MainTabView: View {
     @StateObject private var poemFilterSettings = PoemFilterSettings()
     @StateObject private var appUiSettings = AppUiSettings()
     @StateObject private var navigationManager = NavigationManager()
+    @StateObject private var poemCreationState = PoemCreationState()
     
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -22,13 +23,17 @@ struct MainTabView: View {
                 switch selectedTab {
                 case 0:
                     TestHarnessView()
+                        .environmentObject(poemCreationState)
                 case 1:
                     BrowseView()
                         .environmentObject(navigationManager)
+                        .environmentObject(poemCreationState)
                 case 2:
                     FavoritesView()
+                        .environmentObject(poemCreationState)
                 default:
                     TestHarnessView()
+                        .environmentObject(poemCreationState)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,6 +42,7 @@ struct MainTabView: View {
             .environmentObject(dataManager)
             .environmentObject(chatService)
             .environmentObject(navigationManager)
+            .environmentObject(poemCreationState)
             
             // Custom tab bar
             VStack {
@@ -210,6 +216,7 @@ extension Notification.Name {
     return MainTabView()
         .environmentObject(dataManager)
         .environmentObject(chatService)
+        .environmentObject(PoemCreationState())
 }
 
 #Preview("Tab Bar Only") {

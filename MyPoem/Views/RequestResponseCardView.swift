@@ -7,6 +7,7 @@ struct RequestResponseCardView: View {
     @EnvironmentObject private var chatService: ChatService
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
+    @EnvironmentObject private var poemCreationState: PoemCreationState
     @ObservedObject var request: RequestEnhanced
     
     // MARK: - Animation State
@@ -18,6 +19,9 @@ struct RequestResponseCardView: View {
     @State private var showExpandCollapseButton: Bool = false
     @State private var showingActionSheet: Bool = false
     @State private var wasRecentlyTapped: Bool = false
+    
+    // Context tracking
+    @State private var isInBrowseContext: Bool = false
     
     // Track response state for animations
     @State private var lastResponseId: String? = nil
@@ -70,6 +74,10 @@ struct RequestResponseCardView: View {
         }
         .onReceive(dataManager.$allResponses) { _ in
             handleDataManagerUpdate()
+        }
+        .onAppear {
+            // Check if we're in browse context by looking at the current filter
+            isInBrowseContext = poemFilterSettings.activeFilter != nil
         }
         .sheet(isPresented: $showingActionSheet) {
             actionSheetContent()
@@ -135,15 +143,7 @@ struct RequestResponseCardView: View {
     
     @ViewBuilder
     private func requestTypeChip() -> some View {
-        if appUiSettings.cardDisplayContext == CardDisplayContext.fullInteractive {
-            requestTypeChipInteractive()
-        } else {
-            requestTypeChipTypeFiltered()
-        }
-    }
-    
-    @ViewBuilder
-    private func requestTypeChipInteractive() -> some View {
+        // Always show interactive chip now
         Menu {
             ForEach(PoemType.all, id: \.self) { poemType in
                 if poemType != request.poemType {
@@ -173,24 +173,6 @@ struct RequestResponseCardView: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-    }
-    
-    @ViewBuilder
-    private func requestTypeChipTypeFiltered() -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(poemTypeColor)
-                .frame(width: 8, height: 8)
-            
-            Text(request.poemType.name)
-                .font(.footnote)
-                .fontWeight(.medium)
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.tertiarySystemBackground))
-        .clipShape(Capsule())
     }
     
     private var poemTypeColor: Color {
@@ -322,23 +304,15 @@ struct RequestResponseCardView: View {
                 Image(systemName: isResponseExpanded ? "chevron.up" : "chevron.down")
                     .font(.footnote)
             }
-            .foregroundColor(expandButtonColor)
+            .foregroundColor(.gray)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(expandButtonColor.opacity(0.1))
+            .background(Color.gray.opacity(0.1))
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.top, 8)
-    }
-    
-    private var expandButtonColor: Color {
-        if appUiSettings.cardDisplayContext == CardDisplayContext.typeFiltered {
-            return poemTypeColor
-        } else {
-            return .gray
-        }
     }
     
     @ViewBuilder
@@ -434,9 +408,20 @@ struct RequestResponseCardView: View {
     private func resendRequest(request: RequestEnhanced, as newPoemType: PoemType? = nil) {
         let poemTypeToUse = newPoemType ?? request.poemType
         
-        if let currentFilter = poemFilterSettings.activeFilter,
-           poemTypeToUse.id != currentFilter.id {
-            poemFilterSettings.resetFilter()
+        // Check if we're changing poem type in browse context
+        let isChangingTypeInBrowse = isInBrowseContext && newPoemType != nil && newPoemType != request.poemType
+        
+        // Only reset filter if we're in Create tab
+        if !isInBrowseContext {
+            if let currentFilter = poemFilterSettings.activeFilter,
+               poemTypeToUse.id != currentFilter.id {
+                poemFilterSettings.resetFilter()
+            }
+        }
+        
+        // Start loading indicator if changing type in browse
+        if isChangingTypeInBrowse {
+            poemCreationState.startCreatingPoem(type: poemTypeToUse, topic: request.userInput)
         }
         
         let newRequest = RequestEnhanced(
@@ -450,6 +435,9 @@ struct RequestResponseCardView: View {
             try dataManager.save(request: newRequest)
         } catch {
             print("Failed to save new request for resend: \(error)")
+            if isChangingTypeInBrowse {
+                poemCreationState.cancelCreation()
+            }
             return
         }
         
@@ -457,8 +445,16 @@ struct RequestResponseCardView: View {
             do {
                 let response = try await chatService.send(request: newRequest)
                 print("✅ Successfully resent request and got response: \(response.id)")
+                
+                // Finish creation if we changed type in browse context
+                if isChangingTypeInBrowse {
+                    poemCreationState.finishCreatingPoem()
+                }
             } catch {
                 print("❌ Failed to send or save resent request/response: \(error)")
+                if isChangingTypeInBrowse {
+                    poemCreationState.cancelCreation()
+                }
             }
         }
     }

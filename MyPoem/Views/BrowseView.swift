@@ -7,6 +7,7 @@ struct BrowseView: View {
     @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
     @EnvironmentObject private var appUiSettings: AppUiSettings
     @EnvironmentObject private var navigationManager: NavigationManager
+    @EnvironmentObject private var poemCreationState: PoemCreationState
     @State private var navigationPath = NavigationPath()
     
     // Grid layout configuration
@@ -38,7 +39,8 @@ struct BrowseView: View {
             }
             .onAppear {
                 print("Browse View Appear")
-                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.typeFiltered)
+                // Keep fullInteractive context for browsing
+                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.fullInteractive)
             }
             .onDisappear {
                 print("Browse View Disappear")
@@ -145,6 +147,8 @@ struct PoemTypeTile: View {
 struct PoemTypeDetailView: View {
     @EnvironmentObject private var dataManager: DataManager
     @EnvironmentObject private var appUiSettings: AppUiSettings
+    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
+    @EnvironmentObject private var poemCreationState: PoemCreationState
     let poemType: PoemType
     
     private var requests: [RequestEnhanced] {
@@ -155,6 +159,7 @@ struct PoemTypeDetailView: View {
         MessageHistoryView(requests: requests)
             .navigationTitle(poemType.name)
             .navigationBarTitleDisplayMode(.inline)
+            .environmentObject(poemCreationState)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Text("\(requests.count) poems")
@@ -169,10 +174,15 @@ struct PoemTypeDetailView: View {
             .padding(.bottom, 80)
             .onAppear {
                 print("PoemTypeDetailView Appear")
-                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.typeFiltered)
+                // Set the filter to show we're viewing a specific type
+                poemFilterSettings.setFilter(poemType)
+                // Keep fullInteractive context
+                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.fullInteractive)
             }
             .onDisappear {
                 print("PoemTypeDetailView Disappear")
+                // Clear the filter when leaving
+                poemFilterSettings.resetFilter()
             }
     }
 }
@@ -222,6 +232,7 @@ struct PoemTypeDetailView: View {
         .environmentObject(PoemFilterSettings())
         .environmentObject(AppUiSettings())
         .environmentObject(NavigationManager())
+        .environmentObject(PoemCreationState())
 }
 
 #Preview("Empty Browse View") {
@@ -240,4 +251,5 @@ struct PoemTypeDetailView: View {
         .environmentObject(PoemFilterSettings())
         .environmentObject(AppUiSettings())
         .environmentObject(NavigationManager())
+        .environmentObject(PoemCreationState())
 }

@@ -7,7 +7,7 @@
 import SwiftUI // Or import Combine if you only need ObservableObject and @Published
 
 class AppUiSettings: ObservableObject {
-    @Published var hasPerformedInitialHistoryScroll: Bool = false // nil means "All"
+    @Published var hasPerformedInitialHistoryScroll: Bool = false
     @Published var historyViewTopRequestId: String? = nil
     @Published var activeFilter: PoemType? = nil // nil means "All"
     @Published var cardDisplayContext: CardDisplayContext = CardDisplayContext.fullInteractive
