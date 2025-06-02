@@ -141,27 +141,18 @@ final class CloudKitSyncManager {
     
     private func findLocalRecord(recordId: String) async throws -> Any {
         // Try to find in each model type
-        if let request = try modelContext.fetch(
-            FetchDescriptor<RequestEnhanced>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first {
+        let allRequests = try modelContext.fetch(FetchDescriptor<RequestEnhanced>())
+        if let request = allRequests.first(where: { $0.id == recordId }) {
             return request
         }
         
-        if let response = try modelContext.fetch(
-            FetchDescriptor<ResponseEnhanced>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first {
+        let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+        if let response = allResponses.first(where: { $0.id == recordId }) {
             return response
         }
         
-        if let group = try modelContext.fetch(
-            FetchDescriptor<PoemGroup>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first {
+        let allGroups = try modelContext.fetch(FetchDescriptor<PoemGroup>())
+        if let group = allGroups.first(where: { $0.id == recordId }) {
             return group
         }
         
@@ -196,13 +187,11 @@ final class CloudKitSyncManager {
         // Always keep favorite status if either has it
         if let remoteFavorite = remote["isFavorite"] as? Bool, remoteFavorite {
             // Find associated response and mark as favorite
-            if let responseId = local.responseId,
-               let response = try modelContext.fetch(
-                   FetchDescriptor<ResponseEnhanced>(
-                       predicate: #Predicate { $0.id == responseId }
-                   )
-               ).first {
-                response.isFavorite = true
+            if let responseId = local.responseId {
+                let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+                if let response = allResponses.first(where: { $0.id == responseId }) {
+                    response.isFavorite = true
+                }
             }
         }
         
@@ -274,10 +263,15 @@ final class CloudKitSyncManager {
     }
     
     private func pushLocalChanges() async throws {
-        // Fetch all pending changes
-        let pendingRequests = try await fetchPendingRecords(RequestEnhanced.self)
-        let pendingResponses = try await fetchPendingRecords(ResponseEnhanced.self)
-        let pendingGroups = try await fetchPendingRecords(PoemGroup.self)
+        // Fetch all records and filter for pending ones
+        let allRequests = try modelContext.fetch(FetchDescriptor<RequestEnhanced>())
+        let pendingRequests = allRequests.filter { $0.syncStatus == .pending || $0.syncStatus == .error }
+        
+        let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+        let pendingResponses = allResponses.filter { $0.syncStatus == .pending || $0.syncStatus == .error }
+        
+        let allGroups = try modelContext.fetch(FetchDescriptor<PoemGroup>())
+        let pendingGroups = allGroups.filter { $0.syncStatus == .pending || $0.syncStatus == .error }
         
         pendingChangesCount = pendingRequests.count + pendingResponses.count + pendingGroups.count
         
@@ -446,11 +440,8 @@ final class CloudKitSyncManager {
     
     private func processRequestRecord(_ record: CKRecord) async throws {
         let recordId = record.recordID.recordName
-        let request = try modelContext.fetch(
-            FetchDescriptor<RequestEnhanced>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first
+        let allRequests = try modelContext.fetch(FetchDescriptor<RequestEnhanced>())
+        let request = allRequests.first(where: { $0.id == recordId })
         
         if let existingRequest = request {
             // Update existing request
@@ -480,26 +471,86 @@ final class CloudKitSyncManager {
         request.syncStatus = .synced
     }
     
-    // Similar methods for Response and PoemGroup...
+    private func processResponseRecord(_ record: CKRecord) async throws {
+        let recordId = record.recordID.recordName
+        let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+        let response = allResponses.first(where: { $0.id == recordId })
+        
+        if let existingResponse = response {
+            if shouldUpdateLocal(localDate: existingResponse.lastModified, remoteDate: record["lastModified"] as? Date) {
+                updateResponse(existingResponse, from: record)
+            }
+        } else {
+            let newResponse = ResponseEnhanced()
+            newResponse.id = recordId
+            updateResponse(newResponse, from: record)
+            modelContext.insert(newResponse)
+        }
+        
+        try modelContext.save()
+    }
+    
+    private func updateResponse(_ response: ResponseEnhanced, from record: CKRecord) {
+        response.requestId = record["requestId"] as? String
+        response.userId = record["userId"] as? String
+        response.content = record["content"] as? String
+        response.role = record["role"] as? String
+        response.isFavorite = record["isFavorite"] as? Bool
+        response.dateCreated = record["dateCreated"] as? Date
+        response.lastModified = record["lastModified"] as? Date
+        response.syncStatus = .synced
+    }
+    
+    private func processPoemGroupRecord(_ record: CKRecord) async throws {
+        let recordId = record.recordID.recordName
+        let allGroups = try modelContext.fetch(FetchDescriptor<PoemGroup>())
+        let group = allGroups.first(where: { $0.id == recordId })
+        
+        if let existingGroup = group {
+            if shouldUpdateLocal(localDate: existingGroup.lastModified, remoteDate: record["lastModified"] as? Date) {
+                updatePoemGroup(existingGroup, from: record)
+            }
+        } else {
+            let newGroup = PoemGroup()
+            newGroup.id = recordId
+            updatePoemGroup(newGroup, from: record)
+            modelContext.insert(newGroup)
+        }
+        
+        try modelContext.save()
+    }
+    
+    private func updatePoemGroup(_ group: PoemGroup, from record: CKRecord) {
+        group.originalTopic = record["originalTopic"] as? String
+        group.createdAt = record["createdAt"] as? Date
+        group.requestIds = record["requestIds"] as? [String]
+        group.lastModified = record["lastModified"] as? Date
+        group.syncStatus = .synced
+    }
+    
+    private func deleteLocalRecord(_ recordID: CKRecord.ID) async throws {
+        // Find and delete the local record based on ID
+        let id = recordID.recordName
+        
+        let allRequests = try modelContext.fetch(FetchDescriptor<RequestEnhanced>())
+        if let request = allRequests.first(where: { $0.id == id }) {
+            modelContext.delete(request)
+        } else {
+            let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+            if let response = allResponses.first(where: { $0.id == id }) {
+                modelContext.delete(response)
+            } else {
+                let allGroups = try modelContext.fetch(FetchDescriptor<PoemGroup>())
+                if let group = allGroups.first(where: { $0.id == id }) {
+                    modelContext.delete(group)
+                }
+            }
+        }
+        
+        try modelContext.save()
+    }
     
     // MARK: - Helper Methods
-    
-    private func fetchPendingRecords<T: PersistentModel>(_ type: T.Type) async throws -> [T] {
-        let descriptor = FetchDescriptor<T>(
-            predicate: #Predicate { model in
-                if let enhanced = model as? RequestEnhanced {
-                    return enhanced.syncStatus == .pending || enhanced.syncStatus == .error
-                } else if let enhanced = model as? ResponseEnhanced {
-                    return enhanced.syncStatus == .pending || enhanced.syncStatus == .error
-                } else if let enhanced = model as? PoemGroup {
-                    return enhanced.syncStatus == .pending || enhanced.syncStatus == .error
-                }
-                return false
-            }
-        )
-        
-        return try modelContext.fetch(descriptor)
-    }
     
     private func shouldUpdateLocal(localDate: Date?, remoteDate: Date?) -> Bool {
         guard let local = localDate, let remote = remoteDate else { return true }
@@ -509,27 +560,26 @@ final class CloudKitSyncManager {
     private func updateSyncStatus(for recordId: String, status: SyncStatus) {
         // Update sync status in the model
         Task {
-            if let request = try? modelContext.fetch(
-                FetchDescriptor<RequestEnhanced>(
-                    predicate: #Predicate { $0.id == recordId }
-                )
-            ).first {
-                request.syncStatus = status
-            } else if let response = try? modelContext.fetch(
-                FetchDescriptor<ResponseEnhanced>(
-                    predicate: #Predicate { $0.id == recordId }
-                )
-            ).first {
-                response.syncStatus = status
-            } else if let group = try? modelContext.fetch(
-                FetchDescriptor<PoemGroup>(
-                    predicate: #Predicate { $0.id == recordId }
-                )
-            ).first {
-                group.syncStatus = status
+            do {
+                let allRequests = try modelContext.fetch(FetchDescriptor<RequestEnhanced>())
+                if let request = allRequests.first(where: { $0.id == recordId }) {
+                    request.syncStatus = status
+                } else {
+                    let allResponses = try modelContext.fetch(FetchDescriptor<ResponseEnhanced>())
+                    if let response = allResponses.first(where: { $0.id == recordId }) {
+                        response.syncStatus = status
+                    } else {
+                        let allGroups = try modelContext.fetch(FetchDescriptor<PoemGroup>())
+                        if let group = allGroups.first(where: { $0.id == recordId }) {
+                            group.syncStatus = status
+                        }
+                    }
+                }
+                
+                try modelContext.save()
+            } catch {
+                print("Failed to update sync status: \(error)")
             }
-            
-            try? modelContext.save()
         }
     }
     
@@ -648,96 +698,6 @@ final class CloudKitSyncManager {
         if shouldSync {
             await performSync()
         }
-    }
-    
-    private func processResponseRecord(_ record: CKRecord) async throws {
-        let recordId = record.recordID.recordName
-        let response = try modelContext.fetch(
-            FetchDescriptor<ResponseEnhanced>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first
-        
-        if let existingResponse = response {
-            if shouldUpdateLocal(localDate: existingResponse.lastModified, remoteDate: record["lastModified"] as? Date) {
-                updateResponse(existingResponse, from: record)
-            }
-        } else {
-            let newResponse = ResponseEnhanced()
-            newResponse.id = recordId
-            updateResponse(newResponse, from: record)
-            modelContext.insert(newResponse)
-        }
-        
-        try modelContext.save()
-    }
-    
-    private func updateResponse(_ response: ResponseEnhanced, from record: CKRecord) {
-        response.requestId = record["requestId"] as? String
-        response.userId = record["userId"] as? String
-        response.content = record["content"] as? String
-        response.role = record["role"] as? String
-        response.isFavorite = record["isFavorite"] as? Bool
-        response.dateCreated = record["dateCreated"] as? Date
-        response.lastModified = record["lastModified"] as? Date
-        response.syncStatus = .synced
-    }
-    
-    private func processPoemGroupRecord(_ record: CKRecord) async throws {
-        let recordId = record.recordID.recordName
-        let group = try modelContext.fetch(
-            FetchDescriptor<PoemGroup>(
-                predicate: #Predicate { $0.id == recordId }
-            )
-        ).first
-        
-        if let existingGroup = group {
-            if shouldUpdateLocal(localDate: existingGroup.lastModified, remoteDate: record["lastModified"] as? Date) {
-                updatePoemGroup(existingGroup, from: record)
-            }
-        } else {
-            let newGroup = PoemGroup()
-            newGroup.id = recordId
-            updatePoemGroup(newGroup, from: record)
-            modelContext.insert(newGroup)
-        }
-        
-        try modelContext.save()
-    }
-    
-    private func updatePoemGroup(_ group: PoemGroup, from record: CKRecord) {
-        group.originalTopic = record["originalTopic"] as? String
-        group.createdAt = record["createdAt"] as? Date
-        group.requestIds = record["requestIds"] as? [String]
-        group.lastModified = record["lastModified"] as? Date
-        group.syncStatus = .synced
-    }
-    
-    private func deleteLocalRecord(_ recordID: CKRecord.ID) async throws {
-        // Find and delete the local record based on ID
-        let id = recordID.recordName
-        
-        if let request = try modelContext.fetch(
-            FetchDescriptor<RequestEnhanced>(
-                predicate: #Predicate { $0.id == id }
-            )
-        ).first {
-            modelContext.delete(request)
-        } else if let response = try modelContext.fetch(
-            FetchDescriptor<ResponseEnhanced>(
-                predicate: #Predicate { $0.id == id }
-            )
-        ).first {
-            modelContext.delete(response)
-        } else if let group = try modelContext.fetch(
-            FetchDescriptor<PoemGroup>(
-                predicate: #Predicate { $0.id == id }
-            )
-        ).first {
-            modelContext.delete(group)
-        }
-        
-        try modelContext.save()
     }
 }
 
