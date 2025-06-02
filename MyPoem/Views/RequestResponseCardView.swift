@@ -1,7 +1,7 @@
 // PoemCardView.swift (formerly RequestResponseCardView) - Updated for CloudKit
 import SwiftUI
 
-struct PoemCardView: View {
+struct PoemCardViews: View {
     let request: RequestEnhanced
     @Environment(AppState.self) private var appState
     @Environment(DataManager.self) private var dataManager

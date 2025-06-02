@@ -1,4 +1,4 @@
-// MainTabView.swift - Updated for CloudKit
+// MainTabView.swift - Minimalist Redesign
 import SwiftUI
 
 struct MainTabView: View {
@@ -25,19 +25,10 @@ struct MainTabView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // Custom tab bar
-            VStack {
-                Spacer()
-                CustomTabBar()
-            }
+            // Minimalist tab bar
+            MinimalistTabBar()
         }
         .ignoresSafeArea(.keyboard)
-        .overlay(alignment: .topTrailing) {
-            // Sync status indicator
-            SyncStatusView()
-                .padding(.trailing, 16)
-                .padding(.top, 8)
-        }
         .sheet(isPresented: Binding(
             get: { appState.showingSyncConflicts },
             set: { _ in appState.dismissSyncConflicts() }
@@ -63,110 +54,102 @@ struct MainTabView: View {
     }
 }
 
-struct CustomTabBar: View {
+// MARK: - Minimalist Tab Bar
+struct MinimalistTabBar: View {
     @Environment(AppState.self) private var appState
     @Environment(DataManager.self) private var dataManager
     
-    private let tabs: [(icon: String, selectedIcon: String, label: String, color: Color)] = [
-        ("plus.circle", "plus.circle.fill", "Create", .blue),
-        ("square.grid.2x2", "square.grid.2x2.fill", "Browse", .purple),
-        ("heart", "heart.fill", "Favorites", .red)
+    private let tabs: [(icon: String, label: String)] = [
+        ("plus.circle.fill", "Create"),
+        ("square.grid.2x2", "Browse"),
+        ("heart", "Favorites")
     ]
     
     var body: some View {
         HStack(spacing: 0) {
             ForEach(0..<tabs.count, id: \.self) { index in
-                TabBarButton(
+                MinimalistTabItem(
                     icon: tabs[index].icon,
-                    selectedIcon: tabs[index].selectedIcon,
                     label: tabs[index].label,
-                    color: tabs[index].color,
-                    isSelected: appState.selectedTab == index,
-                    hasUnsyncedChanges: index == 0 && dataManager.hasUnsyncedChanges // Show indicator on Create tab
+                    isActive: appState.selectedTab == index,
+                    hasUnsyncedChanges: index == 0 && dataManager.hasUnsyncedChanges
                 ) {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         appState.navigateToTab(index)
                     }
+                    
+                    // Haptic feedback
+                    let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                    impactFeedback.impactOccurred()
                 }
                 .frame(maxWidth: .infinity)
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
-        .padding(.bottom, 8)
-        .frame(height: 65)
+        .padding(.bottom, 28)
+        .frame(height: 80)
         .background(
-            RoundedRectangle(cornerRadius: 24)
+            Rectangle()
                 .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.1), radius: 8, y: -2)
+                .background(Color.white.opacity(0.95))
+                .ignoresSafeArea()
+                .overlay(
+                    Rectangle()
+                        .frame(height: 1)
+                        .foregroundColor(Color.black.opacity(0.05)),
+                    alignment: .top
+                )
         )
-        .padding(.horizontal, 16)
-        .padding(.bottom, 20)
     }
 }
 
-struct TabBarButton: View {
+// MARK: - Minimalist Tab Item
+struct MinimalistTabItem: View {
     let icon: String
-    let selectedIcon: String
     let label: String
-    let color: Color
-    let isSelected: Bool
+    let isActive: Bool
     let hasUnsyncedChanges: Bool
     let action: () -> Void
     
     @State private var isPressed = false
     
     var body: some View {
-        Button(action: {
-            action()
-            // Haptic feedback
-            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-            impactFeedback.impactOccurred()
-        }) {
+        Button(action: action) {
             VStack(spacing: 4) {
-                ZStack {
-                    // Background circle when selected
-                    if isSelected {
-                        Circle()
-                            .fill(color.opacity(0.15))
-                            .frame(width: 48, height: 48)
-                            .scaleEffect(isPressed ? 0.95 : 1.0)
-                    }
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 24, weight: .regular))
+                        .foregroundColor(isActive ? Color(hex: "1A1A1A") : Color(hex: "666666"))
+                        .scaleEffect(isActive ? 1.15 : 1.0)
                     
-                    // Icon with sync indicator
-                    ZStack(alignment: .topTrailing) {
-                        Image(systemName: isSelected ? selectedIcon : icon)
-                            .font(.system(size: 22, weight: .medium))
-                            .foregroundColor(isSelected ? color : Color(.systemGray))
-                            .scaleEffect(isSelected ? 1.1 : 1.0)
-                            .scaleEffect(isPressed ? 0.9 : 1.0)
-                        
-                        // Unsynced changes indicator
-                        if hasUnsyncedChanges {
-                            Circle()
-                                .fill(Color.orange)
-                                .frame(width: 8, height: 8)
-                                .offset(x: 8, y: -8)
-                        }
+                    // Sync indicator
+                    if hasUnsyncedChanges {
+                        Circle()
+                            .fill(Color(hex: "FF9500"))
+                            .frame(width: 6, height: 6)
+                            .offset(x: 8, y: -2)
                     }
                 }
+                .frame(height: 28)
                 
                 Text(label)
-                    .font(.caption2)
-                    .fontWeight(isSelected ? .medium : .regular)
-                    .foregroundColor(isSelected ? color : Color(.systemGray))
+                    .font(.system(size: 11, weight: isActive ? .semibold : .regular))
+                    .foregroundColor(isActive ? Color(hex: "1A1A1A") : Color(hex: "666666"))
             }
-            .frame(width: 80, height: 60)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isActive ? Color.black.opacity(0.05) : Color.clear)
+            )
+            .scaleEffect(isPressed ? 0.95 : 1.0)
         }
-        .buttonStyle(.plain)
-        .scaleEffect(isPressed ? 0.95 : 1.0)
+        .buttonStyle(PlainButtonStyle())
         .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity, pressing: { pressing in
             withAnimation(.easeInOut(duration: 0.1)) {
                 isPressed = pressing
             }
         }, perform: {})
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isSelected)
-        .animation(.easeInOut(duration: 0.1), value: isPressed)
     }
 }

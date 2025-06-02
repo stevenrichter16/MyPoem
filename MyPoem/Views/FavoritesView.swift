@@ -1,11 +1,5 @@
-//
-//  FavoritesView.swift
-//  MyPoem
-//
-//  Created by Steven Richter on 5/18/25.
-//
+// FavoritesView.swift - Minimalist Redesign
 import SwiftUI
-import SwiftData
 
 struct FavoritesView: View {
     @Environment(DataManager.self) private var dataManager
@@ -22,130 +16,63 @@ struct FavoritesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                Text("Favorites")
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundColor(Color(hex: "1A1A1A"))
+                    .kerning(-0.5)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 50)
+                    .padding(.bottom, 30)
+                
+                // Content
                 if filteredFavorites.isEmpty {
-                    EmptyFavoritesView()
+                    MinimalistFavoritesEmptyState()
+                        .frame(minHeight: 400)
+                        .padding(.top, 100)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            ForEach(filteredFavorites, id: \.id) { request in
-                                if let id = request.id {
-                                    FavoriteCardView(request: request)
-                                        .id(id)
-                                }
+                    LazyVStack(spacing: 60) {
+                        ForEach(filteredFavorites, id: \.id) { request in
+                            if let id = request.id {
+                                PoemCardView(request: request)
+                                    .id(id)
                             }
                         }
-                        .padding(.vertical)
                     }
+                    .padding(.vertical, 20)
+                    .padding(.bottom, 100)
                 }
             }
-            .navigationTitle("Favorites")
-            .navigationBarTitleDisplayMode(.large)
-            .background(Color(.systemGroupedBackground))
-            .padding(.horizontal)
         }
+        .background(Color(hex: "FAFAFA"))
+        .navigationBarHidden(true)
     }
 }
 
-struct EmptyFavoritesView: View {
+// MARK: - Minimalist Empty State for Favorites
+struct MinimalistFavoritesEmptyState: View {
     @Environment(AppState.self) private var appState
     
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "heart.slash")
-                .font(.system(size: 60))
-                .foregroundColor(.gray)
+                .font(.system(size: 64))
+                .foregroundColor(Color(hex: "1A1A1A").opacity(0.1))
             
             Text(appState.activeFilter == nil ?
                  "No favorites yet" :
                  "No \(appState.activeFilter!.name.lowercased()) favorites yet")
-                .font(.title3)
-                .foregroundColor(.secondary)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundColor(Color(hex: "666666"))
             
             Text("Tap the heart icon on any poem to add it to your favorites")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+                .font(.system(size: 16))
+                .foregroundColor(Color(hex: "999999"))
                 .multilineTextAlignment(.center)
+                .lineSpacing(4)
                 .padding(.horizontal, 40)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-struct FavoriteCardView: View {
-    let request: RequestEnhanced
-    @Environment(DataManager.self) private var dataManager
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                if let poemType = request.poemType {
-                    Text(poemType.name)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                
-                Spacer()
-                
-                Button {
-                    toggleFavorite()
-                } label: {
-                    if let response = dataManager.response(for: request) {
-                        Image(systemName: (response.isFavorite ?? false) ? "heart.fill" : "heart")
-                            .foregroundColor((response.isFavorite ?? false) ? Color.purple.opacity(0.6) : .gray)
-                    }
-                }
-            }
-
-            Text(request.userInput ?? "")
-                .font(.headline)
-                .foregroundColor(.primary)
-
-            if let resp = dataManager.response(for: request) {
-                Text(resp.content ?? "")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                    .lineLimit(5)
-
-                HStack {
-                    if resp.syncStatus != .synced {
-                        Image(systemName: "icloud.and.arrow.up")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-                    
-                    Spacer()
-                    
-                    if let date = resp.dateCreated {
-                        Text(timeFmt.string(from: date))
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-                }
-            }
-        }
-        .padding()
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(20)
-        .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 3)
-    }
-
-    private let timeFmt: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "h:mma"
-        f.amSymbol = "am"
-        f.pmSymbol = "pm"
-        return f
-    }()
-
-    private func toggleFavorite() {
-        Task {
-            do {
-                try await dataManager.toggleFavorite(for: request)
-            } catch {
-                print("Failed to toggle favorite: \(error)")
-            }
         }
     }
 }
