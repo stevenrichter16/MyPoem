@@ -208,6 +208,25 @@ final class ChatService {
             throw ChatServiceError.invalidRequest("Missing required data for regeneration")
         }
         
+        // Create a revision of the current content before regenerating
+        if let existingResponse = dataManager.response(for: request),
+           let currentContent = existingResponse.content,
+           !currentContent.isEmpty {
+            do {
+                // Save the current version as a revision
+                try await dataManager.createRevision(
+                    for: request,
+                    content: currentContent,
+                    changeNote: "Before AI regeneration",
+                    changeType: .regeneration
+                )
+                print("📝 Created revision before regeneration")
+            } catch {
+                print("⚠️ Failed to create revision: \(error)")
+                // Continue with regeneration even if revision fails
+            }
+        }
+        
         // Generate new poem
         let poemContent = try await generatePoem(
             type: poemType,
@@ -221,6 +240,19 @@ final class ChatService {
             existingResponse.lastModified = Date()
             existingResponse.syncStatus = .pending
             try await dataManager.updateResponse(existingResponse)
+            
+            // Create a revision for the new regenerated content
+            do {
+                try await dataManager.createRevision(
+                    for: request,
+                    content: poemContent,
+                    changeNote: "AI regenerated poem",
+                    changeType: .regeneration
+                )
+                print("📝 Created revision for regenerated content")
+            } catch {
+                print("⚠️ Failed to create revision for new content: \(error)")
+            }
         } else {
             // Create new response
             let response = ResponseEnhanced(
@@ -232,6 +264,19 @@ final class ChatService {
             )
             
             try await dataManager.saveResponse(response)
+            
+            // Create initial revision for the new poem
+            do {
+                try await dataManager.createRevision(
+                    for: request,
+                    content: poemContent,
+                    changeNote: "Initial AI generated poem",
+                    changeType: .initial
+                )
+                print("📝 Created initial revision")
+            } catch {
+                print("⚠️ Failed to create initial revision: \(error)")
+            }
         }
         
         print("✅ Poem regenerated for request: \(request.id ?? "unknown")")

@@ -28,7 +28,7 @@ struct MessageHistoryView: View {
                         // Force refresh when responses change
                         refreshID = UUID()
                     }
-                    .onReceive(NotificationCenter.default.publisher(for: .scrollToBottom)) { _ in
+                    .onReceive(NotificationCenter.default.publisher(for: .scrollToTop)) { _ in
                         jumpToBottom(proxy: proxy, animated: true)
                     }
             }
@@ -317,8 +317,8 @@ struct MessageHistoryView: View {
     private func jumpToBottomButton() -> some View {
         Button(action: {
             withAnimation {
-                if let lastRequest = requests.last {
-                    scrollPosition = lastRequest.id
+                if let firstRequest = requests.first {
+                    scrollPosition = firstRequest.id
                 }
             }
         }) {
@@ -327,7 +327,7 @@ struct MessageHistoryView: View {
                     .fill(.ultraThinMaterial)
                     .frame(width: 48, height: 48)
                 
-                Image(systemName: "arrow.down.circle.fill")
+                Image(systemName: "arrow.up.circle.fill")
                     .font(.title2)
                     .foregroundColor(.blue)
             }
@@ -345,10 +345,11 @@ struct MessageHistoryView: View {
         if newCount > oldCount {
             // Delay to ensure view is rendered
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                if let lastRequest = requests.last, let id = lastRequest.id {
+                // Since requests are sorted newest first, scroll to the first item
+                if let firstRequest = requests.first, let id = firstRequest.id {
                     isAutoScrolling = true
                     withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                        proxy.scrollTo(id, anchor: .bottom)
+                        proxy.scrollTo(id, anchor: .top)
                     }
                     
                     // Reset auto-scrolling flag
@@ -362,16 +363,17 @@ struct MessageHistoryView: View {
     }
     
     private func jumpToBottom(proxy: ScrollViewProxy, animated: Bool) {
-        guard let lastRequest = requests.last, let id = lastRequest.id else { return }
+        // Since newest items are at the top, we'll rename this to jumpToTop
+        guard let firstRequest = requests.first, let id = firstRequest.id else { return }
         
         isAutoScrolling = true
         
         if animated {
             withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                proxy.scrollTo(id, anchor: .bottom)
+                proxy.scrollTo(id, anchor: .top)
             }
         } else {
-            proxy.scrollTo(id, anchor: .bottom)
+            proxy.scrollTo(id, anchor: .top)
         }
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {

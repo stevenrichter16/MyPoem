@@ -20,6 +20,8 @@ struct PoemCardView: View {
     @State private var showingShareSheet: Bool = false
     @State private var isRegenerating: Bool = false
     
+    @State private var showingRevisionHistory = false
+    
     // Track response state for animations
     @State private var lastResponseId: String? = nil
     @State private var lastSyncStatus: SyncStatus? = nil
@@ -88,6 +90,28 @@ struct PoemCardView: View {
             if let content = response?.content, let topic = request.userInput {
                 ShareSheet(items: [formatPoemForSharing(content: content, topic: topic, type: poemType)])
             }
+        }
+        .contextMenu {
+            Button {
+                showingRevisionHistory = true
+            } label: {
+                Label("View Revision History", systemImage: "clock.arrow.circlepath")
+            }
+            
+            Button {
+                showingShareSheet = true
+            } label: {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
+            
+            Button {
+                copyToClipboard()
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
+        .sheet(isPresented: $showingRevisionHistory) {
+            PoemRevisionTimelineView(request: request)
         }
     }
     

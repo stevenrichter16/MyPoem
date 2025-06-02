@@ -20,7 +20,8 @@ struct MyPoemApp: App {
             let schema = Schema([
                 RequestEnhanced.self,
                 ResponseEnhanced.self,
-                PoemGroup.self
+                PoemGroup.self,
+                PoemRevision.self // Add this
             ])
             
             let modelConfiguration = ModelConfiguration(

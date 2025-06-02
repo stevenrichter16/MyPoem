@@ -436,6 +436,29 @@ final class CloudKitSyncManager {
         return record
     }
     
+    private func createCKRecord(from revision: PoemRevision) throws -> CKRecord? {
+        guard let id = revision.id else { return nil }
+        
+        let recordID = CKRecord.ID(recordName: id, zoneID: defaultZoneID)
+        let record = CKRecord(recordType: "PoemRevision", recordID: recordID)
+        
+        record["requestId"] = revision.requestId as CKRecordValue?
+        record["content"] = revision.content as CKRecordValue?
+        record["revisionNumber"] = revision.revisionNumber as CKRecordValue?
+        record["createdAt"] = revision.createdAt as CKRecordValue?
+        record["changeNote"] = revision.changeNote as CKRecordValue?
+        record["wordCount"] = revision.wordCount as CKRecordValue?
+        record["lineCount"] = revision.lineCount as CKRecordValue?
+        record["parentRevisionId"] = revision.parentRevisionId as CKRecordValue?
+        record["isCurrentVersion"] = (revision.isCurrentVersion ?? false) as CKRecordValue
+        record["changeType"] = revision.changeType?.rawValue as CKRecordValue?
+        record["linesAdded"] = revision.linesAdded as CKRecordValue?
+        record["linesRemoved"] = revision.linesRemoved as CKRecordValue?
+        record["linesModified"] = revision.linesModified as CKRecordValue?
+        record["lastModified"] = Date() as CKRecordValue
+        
+        return record
+    }
     // MARK: - Process Remote Records
     
     private func processRequestRecord(_ record: CKRecord) async throws {

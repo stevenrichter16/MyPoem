@@ -102,8 +102,8 @@ final class AppState {
     
     private func handleTabReselection(_ tab: Int) {
         switch tab {
-        case 0: // Create - scroll to bottom
-            NotificationCenter.default.post(name: .scrollToBottom, object: nil)
+        case 0: // Create - scroll to top (newest poems)
+            NotificationCenter.default.post(name: .scrollToTop, object: nil)
         case 1: // Browse - pop to root
             browseNavigationPath = NavigationPath()
         default:
@@ -286,7 +286,7 @@ final class AppState {
 // MARK: - Notification Names
 
 extension Notification.Name {
-    static let scrollToBottom = Notification.Name("scrollToBottom")
+    static let scrollToTop = Notification.Name("scrollToTop")
     static let refreshContent = Notification.Name("refreshContent")
     static let syncCompleted = Notification.Name("syncCompleted")
     static let syncConflictDetected = Notification.Name("syncConflictDetected")

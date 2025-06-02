@@ -450,3 +450,145 @@ enum DataError: LocalizedError {
         }
     }
 }
+
+// Add to MyPoem/Services/DataManager.swift
+
+extension DataManager {
+    // MARK: - Revision Management
+    
+    @MainActor
+    func createRevision(for request: RequestEnhanced, content: String, changeNote: String? = nil, changeType: ChangeType = .manual) async throws -> PoemRevision {
+        // Find the current revision to set as parent
+        let currentRevisions = try await fetchRevisions(for: request)
+        let parentRevision = currentRevisions.first { $0.isCurrentVersion ?? false }
+        
+        // Mark all existing revisions as not current
+        for revision in currentRevisions {
+            revision.isCurrentVersion = false
+            revision.syncStatus = .pending
+        }
+        
+        // Create new revision
+        let newRevision = PoemRevision(
+            requestId: request.id,
+            content: content,
+            revisionNumber: (parentRevision?.revisionNumber ?? 0) + 1,
+            changeNote: changeNote,
+            parentRevisionId: parentRevision?.id,
+            isCurrentVersion: true
+        )
+        
+        // Calculate change metrics if there's a parent
+        if let parentContent = parentRevision?.content {
+            calculateChangeMetrics(from: parentContent, to: content, for: newRevision)
+        }
+        
+        newRevision.changeType = changeType
+        newRevision.syncStatus = .pending
+        
+        // Insert and save
+        modelContext.insert(newRevision)
+        try modelContext.save()
+        
+        // Trigger sync
+        Task {
+            await syncManager.syncNow()
+        }
+        
+        print("✅ Created revision #\(newRevision.revisionNumber ?? 0) for request: \(request.id ?? "unknown")")
+        
+        return newRevision
+    }
+    
+    @MainActor
+    func fetchRevisions(for request: RequestEnhanced) async throws -> [PoemRevision] {
+        guard let requestId = request.id else { return [] }
+        
+        let descriptor = FetchDescriptor<PoemRevision>(
+            predicate: #Predicate { revision in
+                revision.requestId == requestId
+            },
+            sortBy: [SortDescriptor(\.revisionNumber, order: .reverse)]
+        )
+        
+        return try modelContext.fetch(descriptor)
+    }
+    
+    @MainActor
+    func restoreRevision(_ revision: PoemRevision, for request: RequestEnhanced) async throws {
+        guard let content = revision.content else {
+            throw DataError.invalidInput("Revision has no content")
+        }
+        
+        // Create a new revision with the restored content
+        let restoredRevision = try await createRevision(
+            for: request,
+            content: content,
+            changeNote: "Restored from revision #\(revision.revisionNumber ?? 0)",
+            changeType: .manual
+        )
+        
+        // Update the response with the restored content
+        if let response = response(for: request) {
+            response.content = content
+            response.lastModified = Date()
+            response.syncStatus = .pending
+            try await updateResponse(response)
+        }
+        
+        print("✅ Restored revision #\(revision.revisionNumber ?? 0)")
+    }
+    
+    @MainActor
+    func updatePoemContent(for request: RequestEnhanced, newContent: String, changeNote: String? = nil) async throws {
+        // Get current response
+        guard let response = response(for: request) else {
+            throw DataError.responseNotFound("No response found for request")
+        }
+        
+        // Create revision of current content
+        if let currentContent = response.content {
+            try await createRevision(
+                for: request,
+                content: currentContent,
+                changeNote: "Before manual edit",
+                changeType: .manual
+            )
+        }
+        
+        // Update response with new content
+        response.content = newContent
+        response.lastModified = Date()
+        response.syncStatus = .pending
+        try await updateResponse(response)
+        
+        // Create revision for new content
+        try await createRevision(
+            for: request,
+            content: newContent,
+            changeNote: changeNote ?? "Manual edit",
+            changeType: .manual
+        )
+    }
+    
+    private func calculateChangeMetrics(from oldContent: String, to newContent: String, for revision: PoemRevision) {
+        let oldLines = oldContent.components(separatedBy: .newlines)
+        let newLines = newContent.components(separatedBy: .newlines)
+        
+        // Simple line-based diff calculation
+        let added = max(0, newLines.count - oldLines.count)
+        let removed = max(0, oldLines.count - newLines.count)
+        
+        // Count modified lines (simplified)
+        var modified = 0
+        for i in 0..<min(oldLines.count, newLines.count) {
+            if oldLines[i] != newLines[i] {
+                modified += 1
+            }
+        }
+        
+        revision.linesAdded = added
+        revision.linesRemoved = removed
+        revision.linesModified = modified
+    }
+}
