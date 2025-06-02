@@ -1,84 +1,76 @@
-//
-//  MainTabView.swift
-//  MyPoem
-//
-//  Created by Steven Richter on 5/18/25.
-//
+// MainTabView.swift - Updated for CloudKit
 import SwiftUI
-import SwiftData
 
 struct MainTabView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var chatService: ChatService
-    @State private var selectedTab = 0
-    @StateObject private var poemFilterSettings = PoemFilterSettings()
-    @StateObject private var appUiSettings = AppUiSettings()
-    @StateObject private var navigationManager = NavigationManager()
-    @StateObject private var poemCreationState = PoemCreationState()
-    @State private var browseNavigationTarget: PoemType? = nil
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
+    @Environment(CloudKitSyncManager.self) private var syncManager
     
     var body: some View {
+        @Bindable var appState = appState
+        
         ZStack(alignment: .bottom) {
             // Main content area
             Group {
-                switch selectedTab {
+                switch appState.selectedTab {
                 case 0:
-                    TestHarnessView()
-                        .environmentObject(poemCreationState)
+                    CreateView()
                 case 1:
                     BrowseView()
-                        .environmentObject(navigationManager)
-                        .environmentObject(poemCreationState)
                 case 2:
                     FavoritesView()
-                        .environmentObject(poemCreationState)
                 default:
-                    TestHarnessView()
-                        .environmentObject(poemCreationState)
+                    CreateView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .environmentObject(appUiSettings)
-            .environmentObject(poemFilterSettings)
-            .environmentObject(dataManager)
-            .environmentObject(chatService)
-            .environmentObject(navigationManager)
-            .environmentObject(poemCreationState)
             
             // Custom tab bar
             VStack {
                 Spacer()
-                CustomTabBar(selectedTab: $selectedTab)
+                CustomTabBar()
             }
         }
-        .ignoresSafeArea(.keyboard) // Prevent tab bar from moving with keyboard
-        .onReceive(NotificationCenter.default.publisher(for: .navigateToPoemType)) { notification in
-            if let poemType = notification.userInfo?["poemType"] as? PoemType {
-                // Switch to Browse tab
-                selectedTab = 1
-                // Set navigation target
-                browseNavigationTarget = poemType
-                
-                // Trigger navigation after tab switch
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    NotificationCenter.default.post(
-                        name: .browseNavigateTo,
-                        object: nil,
-                        userInfo: ["poemType": poemType]
-                    )
-                }
+        .ignoresSafeArea(.keyboard)
+        .overlay(alignment: .topTrailing) {
+            // Sync status indicator
+            SyncStatusView()
+                .padding(.trailing, 16)
+                .padding(.top, 8)
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.showingSyncConflicts },
+            set: { _ in appState.dismissSyncConflicts() }
+        )) {
+            ConflictResolutionView(conflictedItems: appState.conflictedItems)
+        }
+        .alert("Sync Error", isPresented: Binding(
+            get: { appState.showingCloudKitError },
+            set: { _ in appState.dismissCloudKitError() }
+        )) {
+            Button("OK") {
+                appState.dismissCloudKitError()
             }
+            Button("Retry") {
+                Task {
+                    await dataManager.triggerSync()
+                }
+                appState.dismissCloudKitError()
+            }
+        } message: {
+            Text(appState.cloudKitErrorMessage ?? "An error occurred while syncing")
         }
     }
 }
 
 struct CustomTabBar: View {
-    @Binding var selectedTab: Int
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
     
-    private let tabs: [(icon: String, selectedIcon: String, color: Color)] = [
-        ("plus.circle", "plus.circle.fill", .blue),
-        ("square.grid.2x2", "square.grid.2x2.fill", .purple),
-        ("heart", "heart.fill", .red)
+    private let tabs: [(icon: String, selectedIcon: String, label: String, color: Color)] = [
+        ("plus.circle", "plus.circle.fill", "Create", .blue),
+        ("square.grid.2x2", "square.grid.2x2.fill", "Browse", .purple),
+        ("heart", "heart.fill", "Favorites", .red)
     ]
     
     var body: some View {
@@ -87,28 +79,13 @@ struct CustomTabBar: View {
                 TabBarButton(
                     icon: tabs[index].icon,
                     selectedIcon: tabs[index].selectedIcon,
+                    label: tabs[index].label,
                     color: tabs[index].color,
-                    isSelected: selectedTab == index
+                    isSelected: appState.selectedTab == index,
+                    hasUnsyncedChanges: index == 0 && dataManager.hasUnsyncedChanges // Show indicator on Create tab
                 ) {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        print("Current tab: \(index)")
-                        print("Tab selected: \(selectedTab)")
-                        if selectedTab == index {
-                            switch index {
-                            case 0:
-                                // Create tab - scroll to bottom
-                                NotificationCenter.default.post(name: .scrollToBottom, object: nil)
-                                
-                            case 1:
-                                // Browse tab - pop to root
-                                NotificationCenter.default.post(name: .popToBrowseRoot, object: nil)
-                            default:
-                                break
-                            }
-                        
-                        } else {
-                            selectedTab = index
-                        }
+                        appState.navigateToTab(index)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -117,16 +94,24 @@ struct CustomTabBar: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .frame(maxHeight: 55)
-        .ignoresSafeArea(edges: .bottom) // Extend to bottom edge
+        .frame(height: 65)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.1), radius: 8, y: -2)
+        )
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
     }
 }
 
 struct TabBarButton: View {
     let icon: String
     let selectedIcon: String
+    let label: String
     let color: Color
     let isSelected: Bool
+    let hasUnsyncedChanges: Bool
     let action: () -> Void
     
     @State private var isPressed = false
@@ -148,16 +133,31 @@ struct TabBarButton: View {
                             .scaleEffect(isPressed ? 0.95 : 1.0)
                     }
                     
-                    // Icon
-                    Image(systemName: isSelected ? selectedIcon : icon)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(isSelected ? color : Color(.systemGray))
-                        .scaleEffect(isSelected ? 1.1 : 1.0)
-                        .scaleEffect(isPressed ? 0.9 : 1.0)
+                    // Icon with sync indicator
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: isSelected ? selectedIcon : icon)
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundColor(isSelected ? color : Color(.systemGray))
+                            .scaleEffect(isSelected ? 1.1 : 1.0)
+                            .scaleEffect(isPressed ? 0.9 : 1.0)
+                        
+                        // Unsynced changes indicator
+                        if hasUnsyncedChanges {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 8, y: -8)
+                        }
+                    }
                 }
+                
+                Text(label)
+                    .font(.caption2)
+                    .fontWeight(isSelected ? .medium : .regular)
+                    .foregroundColor(isSelected ? color : Color(.systemGray))
             }
-            .frame(width: 80, height: 60) // Set visual frame size
-            .contentShape(Rectangle()) // Make entire rectangular area tappable
+            .frame(width: 80, height: 60)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .scaleEffect(isPressed ? 0.95 : 1.0)
@@ -168,85 +168,5 @@ struct TabBarButton: View {
         }, perform: {})
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isSelected)
         .animation(.easeInOut(duration: 0.1), value: isPressed)
-    }
-}
-
-// Add this extension
-extension Notification.Name {
-    static let popToBrowseRoot = Notification.Name("popToBrowseRoot")
-    static let scrollToBottom = Notification.Name("scrollToBottom")
-    static let navigateToPoemType = Notification.Name("navigateToPoemType")
-    static let browseNavigateTo = Notification.Name("browseNavigateTo")
-}
-
-// MARK: - Preview
-#Preview {
-    let container = try! ModelContainer(
-        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
-        configurations: ModelConfiguration(
-            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
-            isStoredInMemoryOnly: true
-        )
-    )
-    let context = container.mainContext
-    let dataManager = DataManager(context: context)
-    let chatService = ChatService(dataManager: dataManager)
-
-    // Sample data for preview
-    let mockPoemType = PoemType.all[0]
-    let mockTemp = Temperature.all[0]
-
-    let favoriteReq = RequestEnhanced(
-        userInput: "a silent lake",
-        userTopic: "Nature",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let favoriteResp = ResponseEnhanced(
-        requestId: favoriteReq.id,
-        userId: "previewer",
-        content: "Still water reflects\nWhispers of wind and moonlight\nTime sleeps on the shore.",
-        role: "assistant",
-        isFavorite: true,
-        hasAnimated: true
-    )
-    favoriteReq.responseId = favoriteResp.id
-
-    let recentReq = RequestEnhanced(
-        userInput: "a rainy night",
-        userTopic: "Weather",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let recentResp = ResponseEnhanced(
-        requestId: recentReq.id,
-        userId: "previewer",
-        content: "Raindrops tap the glass\nMidnight murmurs in the dark\nDreams bloom in the hush.",
-        role: "assistant",
-        isFavorite: false,
-        hasAnimated: true
-    )
-    recentReq.responseId = recentResp.id
-
-    try! dataManager.save(request: favoriteReq)
-    try! dataManager.save(response: favoriteResp)
-    try! dataManager.save(request: recentReq)
-    try! dataManager.save(response: recentResp)
-
-    return MainTabView()
-        .environmentObject(dataManager)
-        .environmentObject(chatService)
-        .environmentObject(PoemCreationState())
-}
-
-#Preview("Tab Bar Only") {
-    ZStack {
-        Color(.systemGroupedBackground)
-            .ignoresSafeArea()
-        
-        VStack {
-            Spacer()
-            CustomTabBar(selectedTab: .constant(0))
-        }
     }
 }

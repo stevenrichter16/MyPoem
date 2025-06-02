@@ -1,345 +1,452 @@
-//
-//  DataManager.swift
-//  MyPoem
-//
-//  Created by Steven Richter on 5/26/25.
-//
-
-import Combine
+// DataManager.swift - Updated for CloudKit
 import Foundation
 import SwiftData
+import Observation
+import CloudKit
 
-// MARK: - ID-Based DataManager
-// MARK: - Enhanced ID-Based DataManager
-import SwiftData
-import SwiftUI
-import Combine
-
-// MARK: - Enhanced ID-Based DataManager with Proper Notifications
+@Observable
 @MainActor
-class DataManager: ObservableObject {
-    @Published var allRequests: [RequestEnhanced] = []
-    @Published var allResponses: [ResponseEnhanced] = []
-    @Published var allPoemGroups: [PoemGroup] = []
-    @Published var isLoading: Bool = false
-    @Published var errorMessage: String?
+final class DataManager {
+    // MARK: - Core Data Storage
+    private(set) var requests: [RequestEnhanced] = []
+    private(set) var responses: [ResponseEnhanced] = []
+    private(set) var poemGroups: [PoemGroup] = []
     
-    // Add this to trigger view updates when responses change
-    @Published var lastResponseUpdate: Date = Date()
+    // MARK: - CloudKit Sync Status
+    private(set) var unsyncedRequestsCount: Int = 0
+    private(set) var unsyncedResponsesCount: Int = 0
+    private(set) var lastSyncTime: Date?
     
-    // MARK: - Private Properties
-    var context: ModelContext
-    private var cancellables = Set<AnyCancellable>()
+    // MARK: - Performance Optimizations
+    @ObservationIgnored private let modelContext: ModelContext
+    @ObservationIgnored private var isLoading = false
+    @ObservationIgnored private var requestCache: [String: RequestEnhanced] = [:]
+    @ObservationIgnored private var responseCache: [String: ResponseEnhanced] = [:]
+    @ObservationIgnored private let syncManager: CloudKitSyncManager
     
-    // Filtering state
-    private var activeFilter: PoemType?
+    // MARK: - Computed Properties
     
-    // Caching
-    private var poemTypeCountCache: [String: Int] = [:]
-    private var mostRecentPoemCache: [String: RequestEnhanced] = [:]
-    private var lastCacheUpdate: Date = .distantPast
-    private let cacheExpirationInterval: TimeInterval = 30
+    var sortedRequests: [RequestEnhanced] {
+        requests.sorted { ($0.createdAt ?? Date.distantPast) > ($1.createdAt ?? Date.distantPast) }
+    }
+    
+    var favoriteRequests: [RequestEnhanced] {
+        requests.filter { request in
+            guard let response = response(for: request) else { return false }
+            return response.isFavorite ?? false
+        }
+    }
+    
+    var hasUnsyncedChanges: Bool {
+        unsyncedRequestsCount > 0 || unsyncedResponsesCount > 0
+    }
+    
+    func requests(for poemType: PoemType) -> [RequestEnhanced] {
+        requests.filter { $0.poemType?.id == poemType.id }
+    }
+    
+    func requestCount(for poemType: PoemType) -> Int {
+        requests.filter { $0.poemType?.id == poemType.id }.count
+    }
+    
+    func mostRecentRequest(for poemType: PoemType) -> RequestEnhanced? {
+        requests
+            .filter { $0.poemType?.id == poemType.id }
+            .max { ($0.createdAt ?? Date.distantPast) < ($1.createdAt ?? Date.distantPast) }
+    }
     
     // MARK: - Initialization
-    init(context: ModelContext) {
-        self.context = context
-        loadData()
+    
+    init(modelContext: ModelContext, syncManager: CloudKitSyncManager) {
+        self.modelContext = modelContext
+        self.syncManager = syncManager
+        
+        Task {
+            await loadData()
+            await updateSyncCounts()
+        }
+        
+        // Observe sync manager changes
+        Task {
+            await observeSyncChanges()
+        }
     }
     
     // MARK: - Data Loading
-    func loadData() {
+    
+    private func loadData() async {
         isLoading = true
-        errorMessage = nil
         
         do {
-            // Load all three tables separately
-            var requestDescriptor = FetchDescriptor<RequestEnhanced>()
-            requestDescriptor.sortBy = [SortDescriptor(\RequestEnhanced.createdAt, order: .forward)]
-            allRequests = try context.fetch(requestDescriptor)
+            // Fetch requests with sync status
+            let requestDescriptor = FetchDescriptor<RequestEnhanced>(
+                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            )
+            let fetchedRequests = try modelContext.fetch(requestDescriptor)
             
-            var responseDescriptor = FetchDescriptor<ResponseEnhanced>()
-            responseDescriptor.sortBy = [SortDescriptor(\ResponseEnhanced.dateCreated, order: .forward)]
-            allResponses = try context.fetch(responseDescriptor)
+            // Fetch responses
+            let responseDescriptor = FetchDescriptor<ResponseEnhanced>(
+                sortBy: [SortDescriptor(\.dateCreated, order: .reverse)]
+            )
+            let fetchedResponses = try modelContext.fetch(responseDescriptor)
             
-            var groupDescriptor = FetchDescriptor<PoemGroup>()
-            groupDescriptor.sortBy = [SortDescriptor(\PoemGroup.createdAt, order: .forward)]
-            allPoemGroups = try context.fetch(groupDescriptor)
+            // Fetch poem groups
+            let groupDescriptor = FetchDescriptor<PoemGroup>(
+                sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+            )
+            let fetchedGroups = try modelContext.fetch(groupDescriptor)
             
-            updateCache()
-            print("📊 DataManager: Loaded \(allRequests.count) requests, \(allResponses.count) responses, \(allPoemGroups.count) groups")
+            // Update storage and build caches
+            await MainActor.run {
+                self.requests = fetchedRequests
+                self.responses = fetchedResponses
+                self.poemGroups = fetchedGroups
+                self.rebuildCaches()
+            }
+            
+            print("📊 DataManager: Loaded \(fetchedRequests.count) requests, \(fetchedResponses.count) responses")
+            
         } catch {
-            errorMessage = "Failed to load data: \(error.localizedDescription)"
-            print("❌ DataManager: Failed to load data - \(error)")
+            print("❌ Failed to load data: \(error)")
         }
         
         isLoading = false
     }
     
-    // MARK: - Save Operations with Proper Notifications
-    func save(request: RequestEnhanced) throws {
-        context.insert(request)
-        try context.save()
-        
-        // Update local array if not already present
-        if !allRequests.contains(where: { $0.id == request.id }) {
-            allRequests.append(request) // Insert at beginning for reverse chronological order
+    // MARK: - CloudKit Sync Support
+    
+    private func observeSyncChanges() async {
+        // Monitor sync state changes
+        withObservationTracking {
+            _ = syncManager.syncState
+            _ = syncManager.lastSyncDate
+        } onChange: {
+            Task { @MainActor in
+                // Reload data after sync
+                if self.syncManager.syncState == .idle {
+                    await self.loadData()
+                    self.lastSyncTime = self.syncManager.lastSyncDate
+                }
+                
+                // Continue observing
+                await self.observeSyncChanges()
+            }
         }
-        
-        updateCache()
-        
-        // Trigger UI update
-        objectWillChange.send()
     }
     
-    func save(response: ResponseEnhanced) throws {
-        context.insert(response)
-        try context.save()
+    private func updateSyncCounts() async {
+        let unsyncedRequests = requests.filter { $0.syncStatus != .synced }
+        let unsyncedResponses = responses.filter { $0.syncStatus != .synced }
         
-        // Update local array if not already present
-        if !allResponses.contains(where: { $0.id == response.id }) {
-            allResponses.append(response) // Insert at beginning for reverse chronological order
+        await MainActor.run {
+            self.unsyncedRequestsCount = unsyncedRequests.count
+            self.unsyncedResponsesCount = unsyncedResponses.count
+        }
+    }
+    
+    func triggerSync() async {
+        await syncManager.syncNow()
+    }
+    
+    // MARK: - Data Operations with CloudKit
+    
+    func createRequest(topic: String, poemType: PoemType, temperature: Temperature) async throws -> RequestEnhanced {
+        let request = RequestEnhanced(
+            userInput: topic,
+            userTopic: topic,
+            poemType: poemType,
+            temperature: temperature
+        )
+        
+        // Mark for sync
+        request.syncStatus = .pending
+        request.lastModified = Date()
+        
+        // Insert into context
+        modelContext.insert(request)
+        
+        // Save to persistent storage
+        try modelContext.save()
+        
+        // Update local storage
+        await MainActor.run {
+            self.requests.append(request)
+            self.requestCache[request.id ?? ""] = request
+            self.unsyncedRequestsCount += 1
         }
         
-        // Update the linked request's responseId if needed
-        if let request = allRequests.first(where: { $0.id == response.requestId }) {
-            if request.responseId != response.id {
-                request.responseId = response.id
-                // Save the updated request
-                try context.save()
+        print("✅ Created request: \(request.id ?? "unknown")")
+        
+        // Trigger background sync
+        Task {
+            await syncManager.syncNow()
+        }
+        
+        return request
+    }
+    
+    func saveResponse(_ response: ResponseEnhanced) async throws {
+        guard let requestId = response.requestId,
+              let request = requestCache[requestId] else {
+            throw DataError.requestNotFound(response.requestId ?? "nil")
+        }
+        
+        // Mark for sync
+        response.syncStatus = .pending
+        response.lastModified = Date()
+        
+        // Insert into context
+        modelContext.insert(response)
+        
+        // Update request with response ID
+        request.responseId = response.id
+        request.lastModified = Date()
+        
+        // Save to persistent storage
+        try modelContext.save()
+        
+        // Update local storage
+        await MainActor.run {
+            self.responses.append(response)
+            self.responseCache[requestId] = response
+            self.unsyncedResponsesCount += 1
+        }
+        
+        print("✅ Saved response for request: \(requestId)")
+        
+        // Trigger background sync
+        Task {
+            await syncManager.syncNow()
+        }
+    }
+    
+    func updateResponse(_ response: ResponseEnhanced) async throws {
+        guard responses.contains(where: { $0.id == response.id }) else {
+            throw DataError.responseNotFound(response.id ?? "nil")
+        }
+        
+        // Mark for sync
+        response.syncStatus = .pending
+        response.lastModified = Date()
+        
+        // Save changes
+        try modelContext.save()
+        
+        // Update cache
+        await MainActor.run {
+            if let requestId = response.requestId {
+                self.responseCache[requestId] = response
             }
         }
         
-        updateCache()
+        await updateSyncCounts()
         
-        // CRITICAL: Trigger UI updates
-        lastResponseUpdate = Date()
-        objectWillChange.send()
+        print("✅ Updated response: \(response.id ?? "unknown")")
         
-        print("✅ DataManager: Saved response \(response.id) and triggered UI update")
-    }
-    
-    func save(poemGroup: PoemGroup) throws {
-        context.insert(poemGroup)
-        try context.save()
-        
-        // Update local array if not already present
-        if !allPoemGroups.contains(where: { $0.id == poemGroup.id }) {
-            allPoemGroups.append(poemGroup)
+        // Trigger sync
+        Task {
+            await syncManager.syncNow()
         }
-        
-        updateCache()
-        objectWillChange.send()
     }
     
-    // MARK: - Delete Operations
-    func delete(request: RequestEnhanced) throws {
+    func deleteRequest(_ request: RequestEnhanced) async throws {
         // Delete associated response first
-        if let responseId = request.responseId,
-           let response = allResponses.first(where: { $0.id == responseId }) {
-            try delete(response: response)
+        if let response = response(for: request) {
+            modelContext.delete(response)
+            await MainActor.run {
+                self.responses.removeAll { $0.id == response.id }
+                if let requestId = request.id {
+                    self.responseCache.removeValue(forKey: requestId)
+                }
+            }
         }
         
-        context.delete(request)
-        try context.save()
+        // Delete request
+        modelContext.delete(request)
+        try modelContext.save()
         
-        // Remove from local array
-        allRequests.removeAll { $0.id == request.id }
-        updateCache()
-        objectWillChange.send()
-    }
-    
-    func delete(response: ResponseEnhanced) throws {
-        context.delete(response)
-        try context.save()
-        
-        // Remove from local array and update associated request
-        allResponses.removeAll { $0.id == response.id }
-        
-        // Clear the responseId from the associated request
-        if let request = allRequests.first(where: { $0.responseId == response.id }) {
-            request.responseId = nil
-            try context.save()
+        // Update local storage
+        await MainActor.run {
+            self.requests.removeAll { $0.id == request.id }
+            if let id = request.id {
+                self.requestCache.removeValue(forKey: id)
+            }
         }
         
-        updateCache()
-        lastResponseUpdate = Date()
-        objectWillChange.send()
-    }
-    
-    func delete(poemGroup: PoemGroup) throws {
-        context.delete(poemGroup)
-        try context.save()
+        await updateSyncCounts()
         
-        // Remove from local array
-        allPoemGroups.removeAll { $0.id == poemGroup.id }
-        updateCache()
-        objectWillChange.send()
+        print("✅ Deleted request: \(request.id ?? "unknown")")
+        
+        // Note: CloudKit deletion will be handled by sync manager
+        Task {
+            await syncManager.syncNow()
+        }
     }
     
-    // MARK: - Query Operations
-    /// Get response for a request
+    func toggleFavorite(for request: RequestEnhanced) async throws {
+        guard let response = response(for: request) else {
+            throw DataError.responseNotFound("No response for request \(request.id ?? "nil")")
+        }
+        
+        response.isFavorite = !(response.isFavorite ?? false)
+        try await updateResponse(response)
+    }
+    
+    // MARK: - Query Methods
+    
     func response(for request: RequestEnhanced) -> ResponseEnhanced? {
-        guard let responseId = request.responseId else { return nil }
-        return allResponses.first { $0.id == responseId }
+        guard let id = request.id else { return nil }
+        return responseCache[id]
     }
     
-    /// Get request for a response
-    func request(for response: ResponseEnhanced) -> RequestEnhanced? {
-        return allRequests.first { $0.id == response.requestId }
+    func request(withId id: String) -> RequestEnhanced? {
+        requestCache[id]
     }
     
-    /// Get requests filtered by poem type
-    func requests(for poemType: PoemType) -> [RequestEnhanced] {
-        return allRequests.filter { $0.poemType.id == poemType.id }
+    func hasResponse(for request: RequestEnhanced) -> Bool {
+        guard let id = request.id else { return false }
+        return responseCache[id] != nil
     }
     
-    /// Get favorite requests
-    func favoriteRequests() -> [RequestEnhanced] {
-        return allRequests.filter { request in
-            guard let responseId = request.responseId else { return false }
-            return allResponses.first(where: { $0.id == responseId })?.isFavorite == true
+    // MARK: - Conflict Resolution
+    
+    func resolveConflict(for itemId: String, strategy: ConflictStrategy) async {
+        await syncManager.resolveConflict(for: itemId, strategy: strategy)
+        await loadData() // Reload after conflict resolution
+    }
+    
+    // MARK: - Cache Management
+    
+    private func rebuildCaches() {
+        requestCache.removeAll()
+        responseCache.removeAll()
+        
+        // Build request cache
+        for request in requests {
+            if let id = request.id {
+                requestCache[id] = request
+            }
+        }
+        
+        // Build response cache with request ID as key for quick lookup
+        for response in responses {
+            if let requestId = response.requestId {
+                responseCache[requestId] = response
+            }
         }
     }
     
-    /// Get requests count for a poem type
-    func requestCount(for poemType: PoemType) -> Int {
-        if Date().timeIntervalSince(lastCacheUpdate) < cacheExpirationInterval,
-           let cachedCount = poemTypeCountCache[poemType.id] {
-            return cachedCount
+    // MARK: - Bulk Operations
+    
+    func clearAllData() async throws {
+        // Delete all responses
+        for response in responses {
+            modelContext.delete(response)
         }
         
-        let count = allRequests.filter { $0.poemType.id == poemType.id }.count
-        poemTypeCountCache[poemType.id] = count
-        return count
-    }
-    
-    /// Get most recent request for a poem type
-    func mostRecentRequest(for poemType: PoemType) -> RequestEnhanced? {
-        if Date().timeIntervalSince(lastCacheUpdate) < cacheExpirationInterval,
-           let cachedRequest = mostRecentPoemCache[poemType.id] {
-            return cachedRequest
+        // Delete all requests
+        for request in requests {
+            modelContext.delete(request)
         }
         
-        let recent = allRequests
-            .filter { $0.poemType.id == poemType.id }
-            .first // Already sorted by date descending
-        
-        mostRecentPoemCache[poemType.id] = recent
-        return recent
-    }
-    
-    func refreshData() {
-        loadData()
-    }
-    
-    private func updateCache() {
-        updatePoemTypeCaches()
-        lastCacheUpdate = Date()
-    }
-    
-    private func updatePoemTypeCaches() {
-        poemTypeCountCache.removeAll()
-        mostRecentPoemCache.removeAll()
-        
-        for poemType in PoemType.all {
-            let typeRequests = allRequests.filter { $0.poemType.id == poemType.id }
-            poemTypeCountCache[poemType.id] = typeRequests.count
-            mostRecentPoemCache[poemType.id] = typeRequests.first
+        // Delete all groups
+        for group in poemGroups {
+            modelContext.delete(group)
         }
         
-        lastCacheUpdate = Date()
+        // Save changes
+        try modelContext.save()
+        
+        // Clear local storage
+        await MainActor.run {
+            self.requests.removeAll()
+            self.responses.removeAll()
+            self.poemGroups.removeAll()
+            self.rebuildCaches()
+        }
+        
+        print("🗑️ Cleared all data")
     }
+    
+    // MARK: - Export/Import for CloudKit Migration
+    
+    func exportDataForCloudKit() async throws -> (requests: [RequestEnhanced], responses: [ResponseEnhanced], groups: [PoemGroup]) {
+        return (requests, responses, poemGroups)
+    }
+    
+    func markAllForSync() async throws {
+        // Mark all items as pending sync
+        for request in requests {
+            request.syncStatus = .pending
+            request.lastModified = Date()
+        }
+        
+        for response in responses {
+            response.syncStatus = .pending
+            response.lastModified = Date()
+        }
+        
+        for group in poemGroups {
+            group.syncStatus = .pending
+            group.lastModified = Date()
+        }
+        
+        try modelContext.save()
+        await updateSyncCounts()
+        
+        print("📤 Marked all data for sync")
+    }
+    
+    #if DEBUG
+    func createSampleData() async throws {
+        let sampleTopics = [
+            "sunset over mountains",
+            "morning coffee ritual",
+            "rain on windows",
+            "childhood memories",
+            "ocean waves at dawn"
+        ]
+        
+        for (index, topic) in sampleTopics.enumerated() {
+            let poemType = PoemType.all[index % PoemType.all.count]
+            let request = try await createRequest(
+                topic: topic,
+                poemType: poemType,
+                temperature: Temperature.all[0]
+            )
+            
+            // Create a mock response
+            let response = ResponseEnhanced(
+                requestId: request.id,
+                userId: "sample",
+                content: "This is a beautiful \(poemType.name) about \(topic)",
+                role: "assistant",
+                isFavorite: index % 2 == 0
+            )
+            
+            try await saveResponse(response)
+        }
+        
+        print("🧪 Created sample data")
+    }
+    #endif
 }
 
-// MARK: - Request Model (No Relationships)
-@Model
-class RequestEnhanced: Identifiable, ObservableObject {
-    @Attribute(.unique) var id: String
-    var userInput: String
-    var userTopic: String
-    var poemType: PoemType
-    var poemVariationId: String?
-    var temperature: Temperature
-    var createdAt: Date
-    
-    // Simple ID references instead of relationships
-    var responseId: String?        // Links to Response
-    var poemGroupId: String?       // Links to PoemGroup
-    var parentRequestId: String?   // Links to parent Request for variations
-    
-    // Metadata for variations
-    var isOriginal: Bool = true
-    var variationNote: String?
+// MARK: - Error Types
 
-    init(id: String = UUID().uuidString,
-         userInput: String,
-         userTopic: String,
-         poemType: PoemType,
-         poemVariationId: String? = nil,
-         temperature: Temperature,
-         createdAt: Date = .now,
-         isOriginal: Bool = true,
-         variationNote: String? = nil,
-         parentRequestId: String? = nil) {
-        self.id = id
-        self.userInput = userInput
-        self.userTopic = userTopic
-        self.poemType = poemType
-        self.poemVariationId = poemVariationId
-        self.temperature = temperature
-        self.createdAt = createdAt
-        self.isOriginal = isOriginal
-        self.variationNote = variationNote
-        self.parentRequestId = parentRequestId
-    }
+enum DataError: LocalizedError {
+    case requestNotFound(String)
+    case responseNotFound(String)
+    case invalidInput(String)
     
-//     Get the actual variation that was used
-//    var usedVariation: PoemTypeVariation {
-//        return poemType.variation(withId: poemVariationId)
-//    }
-}
-
-// MARK: - Response Model (No Relationships)
-@Model
-class ResponseEnhanced {
-    @Attribute(.unique) var id: String
-    var requestId: String          // Simple ID reference to Request
-    var userId: String
-    var content: String
-    var role: String
-    var isFavorite: Bool
-    var hasAnimated: Bool
-    var dateCreated: Date
-
-    init(id: String = UUID().uuidString,
-         requestId: String,
-         userId: String,
-         content: String,
-         role: String,
-         isFavorite: Bool,
-         hasAnimated: Bool = false,
-         dateCreated: Date = .now) {
-        self.id = id
-        self.requestId = requestId
-        self.userId = userId
-        self.content = content
-        self.role = role
-        self.isFavorite = isFavorite
-        self.hasAnimated = hasAnimated
-        self.dateCreated = dateCreated
-    }
-}
-
-// MARK: - PoemGroup Model (No Relationships)
-@Model
-class PoemGroup {
-    @Attribute(.unique) var id: String
-    var originalTopic: String
-    var createdAt: Date
-    
-    init(id: String = UUID().uuidString, originalTopic: String) {
-        self.id = id
-        self.originalTopic = originalTopic
-        self.createdAt = Date()
+    var errorDescription: String? {
+        switch self {
+        case .requestNotFound(let id):
+            return "Request not found: \(id)"
+        case .responseNotFound(let id):
+            return "Response not found: \(id)"
+        case .invalidInput(let message):
+            return "Invalid input: \(message)"
+        }
     }
 }

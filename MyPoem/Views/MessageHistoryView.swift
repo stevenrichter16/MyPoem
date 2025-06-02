@@ -1,245 +1,480 @@
-// MyPoem/Views/MessageHistoryView.swift
+// MessageHistoryView.swift - Updated for CloudKit
 import SwiftUI
-import SwiftData
 
 struct MessageHistoryView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var appUiSettings: AppUiSettings
-    @EnvironmentObject private var poemCreationState: PoemCreationState
-    @EnvironmentObject private var navigationManager: NavigationManager
-    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
+    let requests: [RequestEnhanced]
+    
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
+    @Environment(CloudKitSyncManager.self) private var syncManager
     
     @State private var previousRequestCount: Int = 0
     @State private var showJumpToBottom: Bool = false
+    @State private var scrollPosition: String?
+    @State private var isAutoScrolling: Bool = false
+    @State private var refreshID = UUID()
     
-    let requests: [RequestEnhanced]
-    
-    init(requests: [RequestEnhanced] = []) {
-        self.requests = requests
-    }
+    // Pull to refresh state
+    @State private var isRefreshing: Bool = false
     
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             ScrollViewReader { proxy in
                 messageListContent(proxy: proxy)
+                    .onChange(of: requests.count) { oldCount, newCount in
+                        handleRequestCountChange(oldCount: oldCount, newCount: newCount, proxy: proxy)
+                    }
+                    .onChange(of: dataManager.responses.count) { _, _ in
+                        // Force refresh when responses change
+                        refreshID = UUID()
+                    }
                     .onReceive(NotificationCenter.default.publisher(for: .scrollToBottom)) { _ in
-                        jumpToBottom(proxy: proxy)
+                        jumpToBottom(proxy: proxy, animated: true)
                     }
-                
-                if showJumpToBottom {
-                    jumpToBottomButton(proxy: proxy)
-                }
             }
             
-            // Poem creation notification modal
-            if poemCreationState.showCreationModal {
-                poemCreationModal()
+            // Jump to bottom button
+            if showJumpToBottom && !requests.isEmpty {
+                jumpToBottomButton()
             }
-        }
-    }
-    
-    // MARK: - Poem Creation Modal
-    @ViewBuilder
-    private func poemCreationModal() -> some View {
-        VStack {
-            Spacer()
             
-            Button(action: {
-                if !poemCreationState.isCreatingPoem {
-                    // Only allow tap when not loading
-                    handleModalTap()
-                }
-            }) {
-                HStack(spacing: 16) {
-                    if poemCreationState.isCreatingPoem {
-                        // Loading state
-                        ProgressView()
-                            .scaleEffect(1.2)
-                            .tint(.white)
-                    } else {
-                        // Success state
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.white)
-                            .font(.title2)
-                    }
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let poemType = poemCreationState.createdPoemType {
-                            Text(poemCreationState.isCreatingPoem ? "Creating \(poemType.name)..." : "New \(poemType.name) Created!")
-                                .font(.headline)
-                                .foregroundColor(.white)
-                            
-                            if poemCreationState.isCreatingPoem {
-                                Text("Crafting your poem about \"\(poemCreationState.creationTopic)\"")
-                                    .font(.caption)
-                                    .foregroundColor(.white.opacity(0.9))
-                                    .lineLimit(1)
-                            } else {
-                                Text("Tap to see your new \(poemType.name) poem")
-                                    .font(.caption)
-                                    .foregroundColor(.white.opacity(0.9))
-                            }
-                        }
-                    }
-                    
-                    Spacer()
-                    
-                    if !poemCreationState.isCreatingPoem {
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundColor(.white.opacity(0.8))
-                    }
-                }
-                .padding()
-                .contentShape(Rectangle()) // Make entire area tappable
+            // Sync status overlay for empty state
+            if requests.isEmpty && syncManager.syncState == .syncing {
+                syncingEmptyState()
             }
-            .buttonStyle(.plain)
-            .disabled(poemCreationState.isCreatingPoem) // Disable tap while loading
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                poemCreationState.isCreatingPoem ? Color.blue : Color.green,
-                                poemCreationState.isCreatingPoem ? Color.blue.opacity(0.8) : Color.green.opacity(0.8)
-                            ]),
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 5)
-            )
-            .padding(.horizontal, 20)
-            .padding(.bottom, 100) // Position above tab bar
-            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: poemCreationState.showCreationModal)
-        .animation(.easeInOut(duration: 0.3), value: poemCreationState.isCreatingPoem)
-    }
-    
-    private func handleModalTap() {
-        guard let poemType = poemCreationState.createdPoemType else { return }
-        
-        // Check if we're already viewing this poem type
-        if let currentFilter = poemFilterSettings.activeFilter,
-           currentFilter.id == poemType.id {
-            // Already in the right place, just hide modal
-            poemCreationState.hideModal()
-            return
-        }
-        
-        // Navigate to Browse tab and the specific poem type
-        poemCreationState.navigateToPoemType()
-        
-        // Trigger navigation through NavigationManager
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NotificationCenter.default.post(
-                name: .navigateToPoemType,
-                object: nil,
-                userInfo: ["poemType": poemType]
-            )
-        }
-    }
-
-    // MARK: - Jump to Bottom Button
-    @ViewBuilder
-    private func jumpToBottomButton(proxy: ScrollViewProxy) -> some View {
-        Button(action: {
-            jumpToBottom(proxy: proxy)
-        }) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.title2)
-                .foregroundColor(.white)
-                .shadow(color: .black.opacity(0.2), radius: 4, x: 0, y: 2)
+        .onAppear {
+            previousRequestCount = requests.count
         }
     }
     
-    private func jumpToBottom(proxy: ScrollViewProxy) {
-        if let lastRequest = requests.last {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
-                proxy.scrollTo(lastRequest.id, anchor: .bottom)
-            }
-        }
-    }
-
-    // MARK: - Subviews and Helpers
-
-    private struct MessageRow: View {
-        let request: RequestEnhanced
-        var onDelete: () -> Void
-        @EnvironmentObject private var poemCreationState: PoemCreationState
-
-        var body: some View {
-            RequestResponseCardView(request: request)
-                .environmentObject(poemCreationState)
-                .id(request.id)
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button(role: .destructive) {
-                        withAnimation { onDelete() }
-                    } label: { Label("Delete", systemImage: "trash") }
-                }
-        }
-    }
+    // MARK: - Main Content
     
     @ViewBuilder
     private func messageListContent(proxy: ScrollViewProxy) -> some View {
         List {
-            ForEach(requests, id: \.id) { req in
-                MessageRow(request: req, onDelete: { deleteRequest(request: req) })
+            // Pull to refresh indicator
+            if !requests.isEmpty {
+                pullToRefreshView()
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+            }
+            
+            // Empty state
+            if requests.isEmpty {
+                emptyStateView()
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 400)
+            } else {
+                // Message rows
+                ForEach(requests, id: \.id) { request in
+                    if let id = request.id {
+                        MessageRow(
+                            request: request,
+                            onDelete: { deleteRequest(request) },
+                            scrollProxy: proxy,
+                            dataManager: dataManager
+                        )
+                        .id(id)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.8).combined(with: .opacity),
+                            removal: .scale(scale: 0.8).combined(with: .opacity)
+                        ))
+                    }
+                }
+                
+                // Loading indicator for pending syncs
+                if dataManager.hasUnsyncedChanges {
+                    pendingSyncIndicator()
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
+                }
             }
         }
+        .id(refreshID) // Force refresh when needed
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.clear)
-        .onChange(of: requests.count) { oldCount, newCount in
-            // Scroll to bottom for new messages
-            if newCount > previousRequestCount {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    if let lastRequest = requests.last {
-                        scrollTo(requestID: lastRequest.id, proxy: proxy, anchor: .bottom, animated: true)
-                    }
-                }
-            }
-            previousRequestCount = newCount
-        }
-        .onAppear {
-            // Initial scroll logic
-            if !appUiSettings.hasPerformedInitialHistoryScroll {
-                if !requests.isEmpty {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        if let lastRequest = requests.last {
-                            scrollTo(requestID: lastRequest.id, proxy: proxy, anchor: .bottom, animated: false)
-                        }
-                        appUiSettings.markInitialHistoryScrollPerformed()
-                    }
-                } else {
-                    appUiSettings.markInitialHistoryScrollPerformed()
-                }
-            }
+        .scrollDismissesKeyboard(.interactively)
+        .scrollDetection(coordinateSpace: "messageList", showJumpToBottom: $showJumpToBottom)
+        .refreshable {
+            await performRefresh()
         }
     }
-
+    
+    // MARK: - Subviews
+    
+    private struct MessageRow: View {
+        let request: RequestEnhanced
+        let onDelete: () -> Void
+        let scrollProxy: ScrollViewProxy
+        let dataManager: DataManager
+        
+        @Environment(AppState.self) private var appState
+        @State private var isDeleting: Bool = false
+        
+        var body: some View {
+            PoemCardView(request: request)
+                .opacity(isDeleting ? 0.5 : 1.0)
+                .scaleEffect(isDeleting ? 0.95 : 1.0)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            isDeleting = true
+                            onDelete()
+                        }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    
+                    if request.syncStatus == SyncStatus.error {
+                        Button {
+                            Task {
+                                await retrySync(for: request)
+                            }
+                        } label: {
+                            Label("Retry Sync", systemImage: "arrow.clockwise")
+                        }
+                        .tint(.orange)
+                    }
+                }
+                .swipeActions(edge: .leading) {
+                    Button {
+                        sharePoem(request)
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    .tint(.blue)
+                }
+        }
+        
+        private func retrySync(for request: RequestEnhanced) async {
+            request.syncStatus = SyncStatus.pending
+            request.lastModified = Date()
+            
+            if let response = dataManager.response(for: request) {
+                response.syncStatus = SyncStatus.pending
+                response.lastModified = Date()
+            }
+            
+            await dataManager.triggerSync()
+        }
+        
+        private func sharePoem(_ request: RequestEnhanced) {
+            // Implementation handled by PoemCardView
+        }
+    }
+    
+    @ViewBuilder
+    private func emptyStateView() -> some View {
+        VStack(spacing: 20) {
+            // Context-aware empty state
+            if let filter = appState.activeFilter {
+                // Filtered empty state
+                Image(systemName: "text.badge.slash")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
+                
+                Text("No \(filter.name) poems yet")
+                    .font(.title3)
+                    .foregroundColor(.primary)
+                
+                Text("Create your first \(filter.name.lowercased()) using the + button")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            } else if syncManager.syncState == .syncing {
+                // Syncing state
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .padding(.bottom, 10)
+                
+                Text("Syncing your poems...")
+                    .font(.title3)
+                    .foregroundColor(.primary)
+                
+                Text("Your poems will appear here shortly")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else if !syncManager.isConnected {
+                // Offline state
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
+                
+                Text("You're offline")
+                    .font(.title3)
+                    .foregroundColor(.primary)
+                
+                Text("Your poems will sync when you're back online")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            } else {
+                // Default empty state
+                Image(systemName: "text.badge.plus")
+                    .font(.system(size: 60))
+                    .foregroundColor(.gray)
+                
+                Text("No poems yet")
+                    .font(.title3)
+                    .foregroundColor(.primary)
+                
+                Text("Tap the + button to create your first poem")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            
+            // Quick actions for empty state
+            if syncManager.isConnected {
+                Button(action: {
+                    NotificationCenter.default.post(name: .showComposer, object: nil)
+                }) {
+                    Label("Create Poem", systemImage: "plus.circle.fill")
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                }
+                .padding(.top, 10)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    @ViewBuilder
+    private func pullToRefreshView() -> some View {
+        HStack {
+            Spacer()
+            
+            if isRefreshing {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .gray))
+                    .scaleEffect(0.8)
+            } else {
+                Image(systemName: "arrow.down")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+            
+            Text(isRefreshing ? "Syncing..." : "Pull to sync")
+                .font(.caption)
+                .foregroundColor(.gray)
+            
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .opacity(0.6)
+    }
+    
+    @ViewBuilder
+    private func pendingSyncIndicator() -> some View {
+        HStack {
+            Spacer()
+            
+            ProgressView()
+                .scaleEffect(0.7)
+            
+            Text("\(dataManager.unsyncedRequestsCount + dataManager.unsyncedResponsesCount) items syncing...")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            Spacer()
+        }
+        .padding(.vertical, 12)
+    }
+    
+    @ViewBuilder
+    private func syncingEmptyState() -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+            
+            Text("Loading poems from iCloud...")
+                .font(.caption)
+                .foregroundColor(.white)
+        }
+        .padding()
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.7))
+        )
+        .padding(.bottom, 100)
+    }
+    
+    @ViewBuilder
+    private func jumpToBottomButton() -> some View {
+        Button(action: {
+            withAnimation {
+                if let lastRequest = requests.last {
+                    scrollPosition = lastRequest.id
+                }
+            }
+        }) {
+            ZStack {
+                Circle()
+                    .fill(.ultraThinMaterial)
+                    .frame(width: 48, height: 48)
+                
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.blue)
+            }
+        }
+        .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+        .padding(.trailing, 16)
+        .padding(.bottom, 100)
+        .transition(.scale.combined(with: .opacity))
+    }
+    
     // MARK: - Helper Methods
-
-    private func scrollTo(requestID: String, proxy: ScrollViewProxy, anchor: UnitPoint, animated: Bool) {
+    
+    private func handleRequestCountChange(oldCount: Int, newCount: Int, proxy: ScrollViewProxy) {
+        // Scroll to new items if they were added
+        if newCount > oldCount {
+            // Delay to ensure view is rendered
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                if let lastRequest = requests.last, let id = lastRequest.id {
+                    isAutoScrolling = true
+                    withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                        proxy.scrollTo(id, anchor: .bottom)
+                    }
+                    
+                    // Reset auto-scrolling flag
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        isAutoScrolling = false
+                    }
+                }
+            }
+        }
+        previousRequestCount = newCount
+    }
+    
+    private func jumpToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        guard let lastRequest = requests.last, let id = lastRequest.id else { return }
+        
+        isAutoScrolling = true
+        
         if animated {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                proxy.scrollTo(requestID, anchor: anchor)
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+                proxy.scrollTo(id, anchor: .bottom)
             }
         } else {
-            proxy.scrollTo(requestID, anchor: anchor)
+            proxy.scrollTo(id, anchor: .bottom)
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            isAutoScrolling = false
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showJumpToBottom = false
+            }
         }
     }
+    
+    private func deleteRequest(_ request: RequestEnhanced) {
+        Task {
+            do {
+                try await dataManager.deleteRequest(request)
+            } catch {
+                print("Failed to delete request: \(error)")
+                appState.showCloudKitError("Failed to delete poem: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func performRefresh() async {
+        isRefreshing = true
+        
+        // Trigger sync
+        await dataManager.triggerSync()
+        
+        // Wait a moment for visual feedback
+        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        
+        isRefreshing = false
+    }
+}
 
-    private func deleteRequest(request: RequestEnhanced) {
-        do {
-            try dataManager.delete(request: request)
-        } catch {
-            print("Failed to delete request: \(error)")
+// MARK: - Scroll Phase Detection
+
+struct ScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+struct ScrollDetector: View {
+    let coordinateSpace: String
+    @Binding var showJumpToBottom: Bool
+    let threshold: CGFloat = 100
+    
+    var body: some View {
+        GeometryReader { geometry in
+            Color.clear
+                .preference(
+                    key: ScrollOffsetPreferenceKey.self,
+                    value: geometry.frame(in: .named(coordinateSpace)).minY
+                )
+        }
+        .frame(height: 0)
+        .onPreferenceChange(ScrollOffsetPreferenceKey.self) { offset in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showJumpToBottom = offset < -threshold
+            }
         }
     }
+}
+
+extension View {
+    func scrollDetection(coordinateSpace: String, showJumpToBottom: Binding<Bool>) -> some View {
+        self
+            .coordinateSpace(name: coordinateSpace)
+            .overlay(alignment: .bottom) {
+                ScrollDetector(
+                    coordinateSpace: coordinateSpace,
+                    showJumpToBottom: showJumpToBottom
+                )
+            }
+    }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let showComposer = Notification.Name("showComposer")
+}
+
+// MARK: - Preview
+
+#Preview("Message History") {
+    let mockRequests = (0..<5).map { index in
+        let request = RequestEnhanced(
+            userInput: "Test poem \(index)",
+            userTopic: "Test topic \(index)",
+            poemType: PoemType.all[index % PoemType.all.count],
+            temperature: Temperature.all[0]
+        )
+        request.syncStatus = [SyncStatus.synced, SyncStatus.pending, SyncStatus.syncing].randomElement()
+        return request
+    }
+    
+    return MessageHistoryView(requests: mockRequests)
+        .background(Color(.systemGroupedBackground))
+}
+
+#Preview("Empty State") {
+    MessageHistoryView(requests: [])
+        .background(Color(.systemGroupedBackground))
 }

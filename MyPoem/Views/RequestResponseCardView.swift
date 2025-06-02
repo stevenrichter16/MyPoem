@@ -1,14 +1,12 @@
-// MyPoem/Views/RequestResponseCardView.swift
+// PoemCardView.swift (formerly RequestResponseCardView) - Updated for CloudKit
 import SwiftUI
-import SwiftData
 
-struct RequestResponseCardView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var chatService: ChatService
-    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
-    @EnvironmentObject private var appUiSettings: AppUiSettings
-    @EnvironmentObject private var poemCreationState: PoemCreationState
-    @ObservedObject var request: RequestEnhanced
+struct PoemCardView: View {
+    let request: RequestEnhanced
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
+    @Environment(ChatService.self) private var chatService
+    @Environment(CloudKitSyncManager.self) private var syncManager
     
     // MARK: - Animation State
     @State private var isCardAnimating: Bool = false
@@ -19,164 +17,187 @@ struct RequestResponseCardView: View {
     @State private var showExpandCollapseButton: Bool = false
     @State private var showingActionSheet: Bool = false
     @State private var wasRecentlyTapped: Bool = false
-    
-    // Context tracking
-    @State private var isInBrowseContext: Bool = false
+    @State private var showingShareSheet: Bool = false
+    @State private var isRegenerating: Bool = false
     
     // Track response state for animations
     @State private var lastResponseId: String? = nil
+    @State private var lastSyncStatus: SyncStatus? = nil
     
     private let collapsedLineLimit = 6
     private let heightComparisonFudgeFactor: CGFloat = 8.0
     
-    // MARK: - Styling Constants
-    private struct Design {
-        static let cardCornerRadius: CGFloat = 16
-        static let cardPadding: CGFloat = 12
-        static let headerSpacing: CGFloat = 18
-        static let contentSpacing: CGFloat = 16
-        static let buttonSize: CGFloat = 42
-        static let iconSize: CGFloat = 20
-        static let shadowRadius: CGFloat = 8
-        static let animationDuration: Double = 0.35
-    }
+    // MARK: - Computed Properties
     
-    // MARK: - Timestamp Formatter
-    private static let timeFmt: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .none
-        f.timeStyle = .short
-        return f
-    }()
-    
-    // Computed property to get the response - this will update when DataManager changes
     private var response: ResponseEnhanced? {
         dataManager.response(for: request)
     }
     
+    private var poemType: PoemType? {
+        request.poemType
+    }
+    
+    private var syncStatus: SyncStatus {
+        // Check both request and response sync status
+        let requestSync = request.syncStatus ?? .synced
+        let responseSync = response?.syncStatus ?? .synced
+        
+        // Return the "worst" status
+        if requestSync == .error || responseSync == .error {
+            return .error
+        } else if requestSync == .conflict || responseSync == .conflict {
+            return .conflict
+        } else if requestSync == .syncing || responseSync == .syncing {
+            return .syncing
+        } else if requestSync == .pending || responseSync == .pending {
+            return .pending
+        }
+        return .synced
+    }
+    
+    // MARK: - Body
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.contentSpacing) {
+        VStack(alignment: .leading, spacing: 16) {
             requestSection()
             responseSection()
                 .onTapGesture {
-                    provideTapFeedback()
-                    isResponseExpanded.toggle()
+                    if response != nil && !(response?.content ?? "").isEmpty {
+                        provideTapFeedback()
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            isResponseExpanded.toggle()
+                        }
+                    }
                 }
         }
-        .padding(Design.cardPadding)
+        .padding(12)
         .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Design.cardCornerRadius))
-        .shadow(color: .black.opacity(0.08), radius: Design.shadowRadius, x: 0, y: 4)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .shadow(color: shadowColor, radius: 8, x: 0, y: 4)
         .padding(.horizontal, 16)
-        // CRITICAL: Listen to DataManager changes
-        .onReceive(dataManager.$lastResponseUpdate) { _ in
+        .onChange(of: dataManager.responses) { oldValue, newValue in
             handleDataManagerUpdate()
         }
-        .onReceive(dataManager.$allResponses) { _ in
-            handleDataManagerUpdate()
-        }
-        .onAppear {
-            // Check if we're in browse context by looking at the current filter
-            isInBrowseContext = poemFilterSettings.activeFilter != nil
+        .onChange(of: response?.syncStatus) { oldValue, newValue in
+            handleSyncStatusChange(from: oldValue, to: newValue)
         }
         .sheet(isPresented: $showingActionSheet) {
             actionSheetContent()
         }
-    }
-    
-    // MARK: - Data Manager Update Handler
-    private func handleDataManagerUpdate() {
-        let currentResponse = dataManager.response(for: request)
-        let currentResponseId = currentResponse?.id
-        
-        // Check if we got a new response
-        if currentResponseId != lastResponseId {
-            print("🔄 RequestResponseCardView: Response changed from \(lastResponseId ?? "nil") to \(currentResponseId ?? "nil")")
-            
-            if let newResponse = currentResponse, !newResponse.hasAnimated {
-                print("🎬 Starting animation for new response: \(newResponse.id)")
-                startCardAppearAnimation(newResponse)
+        .sheet(isPresented: $showingShareSheet) {
+            if let content = response?.content, let topic = request.userInput {
+                ShareSheet(items: [formatPoemForSharing(content: content, topic: topic, type: poemType)])
             }
-            
-            lastResponseId = currentResponseId
         }
     }
     
-    private func provideTapFeedback() {
-        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-        impactFeedback.impactOccurred()
-        
-        wasRecentlyTapped = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            wasRecentlyTapped = false
-        }
-    }
+    // MARK: - Card Styling
     
-    // MARK: - Background
     private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: Design.cardCornerRadius)
+        RoundedRectangle(cornerRadius: 16)
             .fill(Color(.secondarySystemBackground))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.cardCornerRadius)
-                    .stroke(Color(.quaternaryLabel), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(borderColor, lineWidth: borderWidth)
             )
     }
     
+    private var borderColor: Color {
+        switch syncStatus {
+        case .error:
+            return .red.opacity(0.5)
+        case .conflict:
+            return .yellow.opacity(0.5)
+        case .pending, .syncing:
+            return .orange.opacity(0.3)
+        case .synced:
+            return Color(.quaternaryLabel)
+        }
+    }
+    
+    private var borderWidth: CGFloat {
+        syncStatus == .synced ? 0.5 : 1.5
+    }
+    
+    private var shadowColor: Color {
+        switch syncStatus {
+        case .error:
+            return .red.opacity(0.2)
+        case .conflict:
+            return .yellow.opacity(0.2)
+        case .pending, .syncing:
+            return .orange.opacity(0.15)
+        case .synced:
+            return .black.opacity(0.08)
+        }
+    }
+    
     // MARK: - Request Section
+    
     @ViewBuilder
     private func requestSection() -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: Design.headerSpacing) {
+            HStack(alignment: .top, spacing: 18) {
                 requestTypeChip()
                 Spacer()
                 requestActions()
             }
             
-            Text(request.userInput)
-                .font(.title3)
-                .fontWeight(.medium)
-                .foregroundColor(.primary)
-                .lineLimit(3)
-                .multilineTextAlignment(.leading)
+            if let input = request.userInput {
+                Text(input)
+                    .font(.title3)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            }
+            
+            // Sync status indicator
+            if syncStatus != .synced {
+                syncStatusBadge()
+            }
         }
     }
     
     @ViewBuilder
     private func requestTypeChip() -> some View {
-        // Always show interactive chip now
-        Menu {
-            ForEach(PoemType.all, id: \.self) { poemType in
-                if poemType != request.poemType {
-                    Button(action: { resendRequest(request: request, as: poemType) }) {
-                        Label(poemType.name, systemImage: "arrow.clockwise")
+        if let poemType = poemType {
+            Menu {
+                ForEach(PoemType.all, id: \.self) { type in
+                    if type.id != poemType.id {
+                        Button(action: {
+                            resendRequest(as: type)
+                        }) {
+                            Label(type.name, systemImage: "arrow.clockwise")
+                        }
                     }
                 }
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(poemTypeColor)
+                        .frame(width: 8, height: 8)
+                    
+                    Text(poemType.name)
+                        .font(.footnote)
+                        .fontWeight(.medium)
+                        .foregroundColor(.secondary)
+                    
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(.tertiarySystemBackground))
+                .clipShape(Capsule())
             }
-        } label: {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(poemTypeColor)
-                    .frame(width: 8, height: 8)
-                
-                Text(request.poemType.name)
-                    .font(.footnote)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
-                
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(.tertiarySystemBackground))
-            .clipShape(Capsule())
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
     
     private var poemTypeColor: Color {
-        switch request.poemType.name.lowercased() {
+        switch poemType?.name.lowercased() {
         case "haiku": return .blue
         case "sonnet": return .purple
         case "free verse": return .green
@@ -189,33 +210,118 @@ struct RequestResponseCardView: View {
     @ViewBuilder
     private func requestActions() -> some View {
         HStack(spacing: 8) {
-            Button(action: { resendRequest(request: request) }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: Design.iconSize, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .frame(width: Design.buttonSize, height: Design.buttonSize)
-                    .background(Color(.tertiarySystemBackground))
-                    .clipShape(Circle())
+            // Regenerate button
+            Button(action: {
+                regeneratePoem()
+            }) {
+                ZStack {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .opacity(isRegenerating ? 0 : 1)
+                    
+                    if isRegenerating {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                            .progressViewStyle(CircularProgressViewStyle(tint: .secondary))
+                    }
+                }
+                .frame(width: 42, height: 42)
+                .background(Color(.tertiarySystemBackground))
+                .clipShape(Circle())
             }
             .buttonStyle(.plain)
+            .disabled(isRegenerating || chatService.isGenerating)
             
+            // Favorite button
             if response != nil {
-                Button(action: { favoriteRequest(request: request) }) {
-                    Image(systemName: response?.isFavorite == true ? "heart.fill" : "heart")
-                        .font(.system(size: Design.iconSize, weight: .medium))
-                        .foregroundColor(response?.isFavorite == true ? .red : .secondary)
-                        .frame(width: Design.buttonSize, height: Design.buttonSize)
+                Button(action: { favoriteRequest() }) {
+                    Image(systemName: (response?.isFavorite ?? false) ? "heart.fill" : "heart")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor((response?.isFavorite ?? false) ? .red : .secondary)
+                        .frame(width: 42, height: 42)
                         .background(Color(.tertiarySystemBackground))
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .scaleEffect(response?.isFavorite == true ? 1.1 : 1.0)
+                .scaleEffect((response?.isFavorite ?? false) ? 1.1 : 1.0)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: response?.isFavorite)
             }
+            
+            // More actions menu
+            Menu {
+                Button(action: { showingShareSheet = true }) {
+                    Label("Share Poem", systemImage: "square.and.arrow.up")
+                }
+                
+                Button(action: { copyToClipboard() }) {
+                    Label("Copy to Clipboard", systemImage: "doc.on.doc")
+                }
+                
+                if syncStatus == .conflict {
+                    Button(action: { resolveConflict() }) {
+                        Label("Resolve Conflict", systemImage: "exclamationmark.triangle")
+                    }
+                }
+                
+                Divider()
+                
+                Button(role: .destructive, action: { deletePoem() }) {
+                    Label("Delete Poem", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 42, height: 42)
+                    .background(Color(.tertiarySystemBackground))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+    
+    @ViewBuilder
+    private func syncStatusBadge() -> some View {
+        HStack(spacing: 4) {
+            switch syncStatus {
+            case .pending:
+                Image(systemName: "icloud.and.arrow.up")
+                Text("Waiting to sync")
+            case .syncing:
+                ProgressView()
+                    .scaleEffect(0.7)
+                Text("Syncing...")
+            case .conflict:
+                Image(systemName: "exclamationmark.icloud")
+                Text("Sync conflict")
+            case .error:
+                Image(systemName: "xmark.icloud")
+                Text("Sync error")
+            case .synced:
+                EmptyView()
+            }
+        }
+        .font(.caption)
+        .foregroundColor(syncStatusColor)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(syncStatusColor.opacity(0.1))
+        .clipShape(Capsule())
+    }
+    
+    private var syncStatusColor: Color {
+        switch syncStatus {
+        case .pending: return .orange
+        case .syncing: return .blue
+        case .conflict: return .yellow
+        case .error: return .red
+        case .synced: return .green
         }
     }
     
     // MARK: - Response Section
+    
     @ViewBuilder
     private func responseSection() -> some View {
         if let response = response {
@@ -227,16 +333,25 @@ struct RequestResponseCardView: View {
             } else {
                 responseContent(for: response)
             }
+        } else if chatService.isGenerating || isRegenerating {
+            generatingIndicator()
         } else {
-            thinkingIndicator()
+            errorIndicator()
         }
     }
     
     @ViewBuilder
     private func responseContent(for response: ResponseEnhanced) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            responseText(response.content)
-            responseFooter(response)
+        VStack(alignment: .leading, spacing: 8) {
+            if let content = response.content, !content.isEmpty {
+                responseText(content)
+                responseFooter(response)
+            } else {
+                Text("Empty response")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .italic()
+            }
         }
         .padding(.top, 8)
     }
@@ -251,6 +366,7 @@ struct RequestResponseCardView: View {
                 .lineLimit(isResponseExpanded ? nil : collapsedLineLimit)
                 .multilineTextAlignment(.leading)
                 .background(heightMeasurementOverlay(content: content))
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isResponseExpanded)
             
             if showExpandCollapseButton {
                 expandCollapseButton()
@@ -263,51 +379,61 @@ struct RequestResponseCardView: View {
         GeometryReader { geometry in
             Color.clear
                 .overlay(
-                    Text(content)
-                        .font(.body)
-                        .lineSpacing(2)
-                        .lineLimit(nil)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: geometry.size.width)
-                        .readSize { size in
-                            if fullTextHeight != size.height {
-                                fullTextHeight = size.height
-                                updateExpandButtonVisibility()
-                            }
-                        }
-                        .opacity(0),
-                    alignment: .topLeading
-                )
-                .overlay(
-                    Text(content)
-                        .font(.body)
-                        .lineSpacing(2)
-                        .lineLimit(collapsedLineLimit)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(width: geometry.size.width)
-                        .readSize { size in
-                            if collapsedTextHeight != size.height {
-                                collapsedTextHeight = size.height
-                                updateExpandButtonVisibility()
-                            }
-                        }
-                        .opacity(0),
-                    alignment: .topLeading
+                    VStack {
+                        Text(content)
+                            .font(.body)
+                            .lineSpacing(2)
+                            .lineLimit(nil)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: geometry.size.width, alignment: .leading)
+                            .background(
+                                GeometryReader { textGeometry in
+                                    Color.clear
+                                        .onAppear {
+                                            fullTextHeight = textGeometry.size.height
+                                            updateExpandButtonVisibility()
+                                        }
+                                }
+                            )
+                        
+                        Text(content)
+                            .font(.body)
+                            .lineSpacing(2)
+                            .lineLimit(collapsedLineLimit)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(width: geometry.size.width, alignment: .leading)
+                            .background(
+                                GeometryReader { textGeometry in
+                                    Color.clear
+                                        .onAppear {
+                                            collapsedTextHeight = textGeometry.size.height
+                                            updateExpandButtonVisibility()
+                                        }
+                                }
+                            )
+                    }
+                    .opacity(0)
                 )
         }
     }
     
     @ViewBuilder
     private func expandCollapseButton() -> some View {
-        Button(action: { isResponseExpanded.toggle() }) {
-            HStack(spacing: 4) {
-                Image(systemName: isResponseExpanded ? "chevron.up" : "chevron.down")
-                    .font(.footnote)
+        Button(action: {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                isResponseExpanded.toggle()
             }
-            .foregroundColor(.gray)
+        }) {
+            HStack(spacing: 4) {
+                Text(isResponseExpanded ? "Show less" : "Show more")
+                    .font(.caption)
+                Image(systemName: isResponseExpanded ? "chevron.up" : "chevron.down")
+                    .font(.caption2)
+            }
+            .foregroundColor(.blue)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(Color.gray.opacity(0.1))
+            .background(Color.blue.opacity(0.1))
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -318,29 +444,38 @@ struct RequestResponseCardView: View {
     @ViewBuilder
     private func responseFooter(_ response: ResponseEnhanced) -> some View {
         HStack {
+            if let createdDate = response.dateCreated {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    
+                    Text(formatDate(createdDate))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
             Spacer()
             
-            HStack(spacing: 4) {
-                Image(systemName: "clock")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                
-                Text(Self.timeFmt.string(from: response.dateCreated))
+            if response.syncStatus != .synced {
+                Image(systemName: "icloud.and.arrow.up")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.orange)
             }
         }
+        .padding(.top, 4)
     }
     
     @ViewBuilder
-    private func thinkingIndicator() -> some View {
+    private func generatingIndicator() -> some View {
         HStack(spacing: 12) {
             ProgressView()
                 .scaleEffect(0.8)
                 .tint(.secondary)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text("Crafting your poem...")
+                Text("Crafting your \(poemType?.name ?? "poem")...")
                     .font(.footnote)
                     .fontWeight(.medium)
                     .foregroundColor(.secondary)
@@ -356,27 +491,69 @@ struct RequestResponseCardView: View {
     }
     
     @ViewBuilder
-    private func actionSheetContent() -> some View {
-        VStack(spacing: 20) {
-            Text("Poem Options")
-                .font(.headline)
-                .padding(.top)
+    private func errorIndicator() -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.body)
+                .foregroundColor(.orange)
             
-            Button("Dismiss") {
-                showingActionSheet = false
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Unable to generate poem")
+                    .font(.footnote)
+                    .fontWeight(.medium)
+                    .foregroundColor(.secondary)
+                
+                Text("Tap regenerate to try again")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
-            .padding(.bottom)
+            
+            Spacer()
         }
-        .presentationDetents([.medium])
+        .padding(.vertical, 12)
     }
     
     // MARK: - Helper Methods
+    
     private func updateExpandButtonVisibility() {
         if fullTextHeight > 0 && collapsedTextHeight > 0 {
             let shouldShow = fullTextHeight > (collapsedTextHeight + heightComparisonFudgeFactor)
             if showExpandCollapseButton != shouldShow {
                 showExpandCollapseButton = shouldShow
             }
+        }
+    }
+    
+    private func handleDataManagerUpdate() {
+        let currentResponse = dataManager.response(for: request)
+        let currentResponseId = currentResponse?.id
+        
+        // Check if we got a new response
+        if currentResponseId != lastResponseId {
+            print("🔄 PoemCardView: Response changed from \(lastResponseId ?? "nil") to \(currentResponseId ?? "nil")")
+            
+            if let newResponse = currentResponse, !(newResponse.hasAnimated ?? true) {
+                print("🎬 Starting animation for new response: \(newResponse.id ?? "unknown")")
+                startCardAppearAnimation(newResponse)
+            }
+            
+            lastResponseId = currentResponseId
+        }
+    }
+    
+    private func handleSyncStatusChange(from oldStatus: SyncStatus?, to newStatus: SyncStatus?) {
+        guard let new = newStatus, new != oldStatus else { return }
+        
+        // Add subtle animation when sync status changes
+        withAnimation(.easeInOut(duration: 0.3)) {
+            lastSyncStatus = new
+        }
+        
+        // Show feedback for specific transitions
+        if oldStatus == .syncing && new == .synced {
+            provideSyncSuccessFeedback()
+        } else if new == .error {
+            provideSyncErrorFeedback()
         }
     }
     
@@ -394,80 +571,212 @@ struct RequestResponseCardView: View {
                 isCardAnimating = false
                 response.hasAnimated = true
                 
-                do {
-                    try dataManager.save(response: response)
-                    print("✅ Marked response as animated: \(response.id)")
-                } catch {
-                    print("❌ Failed to save response after animation: \(error)")
+                Task {
+                    do {
+                        try await dataManager.updateResponse(response)
+                        print("✅ Marked response as animated: \(response.id ?? "unknown")")
+                    } catch {
+                        print("❌ Failed to save response after animation: \(error)")
+                    }
                 }
             }
         }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+    
+    private func formatPoemForSharing(content: String, topic: String, type: PoemType?) -> String {
+        let typeName = type?.name ?? "Poem"
+        return """
+        \(typeName) about "\(topic)"
+        
+        \(content)
+        
+        Created with MyPoem
+        """
+    }
+    
+    // MARK: - Feedback Methods
+    
+    private func provideTapFeedback() {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+        impactFeedback.impactOccurred()
+        
+        wasRecentlyTapped = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            wasRecentlyTapped = false
+        }
+    }
+    
+    private func provideSyncSuccessFeedback() {
+        let notificationFeedback = UINotificationFeedbackGenerator()
+        notificationFeedback.notificationOccurred(.success)
+    }
+    
+    private func provideSyncErrorFeedback() {
+        let notificationFeedback = UINotificationFeedbackGenerator()
+        notificationFeedback.notificationOccurred(.error)
     }
     
     // MARK: - Actions
-    private func resendRequest(request: RequestEnhanced, as newPoemType: PoemType? = nil) {
-        let poemTypeToUse = newPoemType ?? request.poemType
+    
+    private func resendRequest(as newPoemType: PoemType) {
+        guard let topic = request.userTopic else { return }
         
-        // Check if we're changing poem type in browse context
-        let isChangingTypeInBrowse = isInBrowseContext && newPoemType != nil && newPoemType != request.poemType
+        // Show creation state in UI
+        appState.startPoemCreation(type: newPoemType, topic: topic)
+    }
+    
+    private func regeneratePoem() {
+        isRegenerating = true
         
-        // Only reset filter if we're in Create tab
-        if !isInBrowseContext {
-            if let currentFilter = poemFilterSettings.activeFilter,
-               poemTypeToUse.id != currentFilter.id {
-                poemFilterSettings.resetFilter()
-            }
-        }
-        
-        // Start loading indicator if changing type in browse
-        if isChangingTypeInBrowse {
-            poemCreationState.startCreatingPoem(type: poemTypeToUse, topic: request.userInput)
-        }
-        
-        let newRequest = RequestEnhanced(
-            userInput: request.userInput,
-            userTopic: request.userTopic,
-            poemType: poemTypeToUse,
-            temperature: request.temperature
-        )
-        
-        do {
-            try dataManager.save(request: newRequest)
-        } catch {
-            print("Failed to save new request for resend: \(error)")
-            if isChangingTypeInBrowse {
-                poemCreationState.cancelCreation()
-            }
-            return
-        }
-        
-        Task { @MainActor in
+        Task {
             do {
-                let response = try await chatService.send(request: newRequest)
-                print("✅ Successfully resent request and got response: \(response.id)")
-                
-                // Finish creation if we changed type in browse context
-                if isChangingTypeInBrowse {
-                    poemCreationState.finishCreatingPoem()
-                }
+                try await chatService.regeneratePoem(for: request)
+                isRegenerating = false
             } catch {
-                print("❌ Failed to send or save resent request/response: \(error)")
-                if isChangingTypeInBrowse {
-                    poemCreationState.cancelCreation()
-                }
+                isRegenerating = false
+                appState.showCloudKitError("Failed to regenerate poem: \(error.localizedDescription)")
             }
         }
     }
     
-    private func favoriteRequest(request: RequestEnhanced) {
-        guard let response = dataManager.response(for: request) else { return }
-        
-        response.isFavorite.toggle()
-        do {
-            try dataManager.save(response: response)
-            print("✅ Toggled favorite status for response: \(response.id)")
-        } catch {
-            print("❌ Failed to save favorite status: \(error)")
+    private func favoriteRequest() {
+        Task {
+            do {
+                try await dataManager.toggleFavorite(for: request)
+            } catch {
+                print("❌ Failed to toggle favorite: \(error)")
+                appState.showCloudKitError("Failed to update favorite status")
+            }
         }
     }
+    
+    private func copyToClipboard() {
+        guard let content = response?.content,
+              let topic = request.userInput else { return }
+        
+        UIPasteboard.general.string = formatPoemForSharing(
+            content: content,
+            topic: topic,
+            type: poemType
+        )
+        
+        // Provide feedback
+        let notificationFeedback = UINotificationFeedbackGenerator()
+        notificationFeedback.notificationOccurred(.success)
+    }
+    
+    private func resolveConflict() {
+        guard let requestId = request.id else { return }
+        
+        // Show conflict resolution UI
+        appState.showSyncConflicts(items: [
+            (local: request, remote: request, recordId: requestId)
+        ])
+    }
+    
+    private func deletePoem() {
+        Task {
+            do {
+                try await dataManager.deleteRequest(request)
+            } catch {
+                appState.showCloudKitError("Failed to delete poem: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func actionSheetContent() -> some View {
+        NavigationView {
+            List {
+                Section("Poem Information") {
+                    if let poemType = poemType {
+                        LabeledContent("Type", value: poemType.name)
+                    }
+                    
+                    if let createdDate = request.createdAt {
+                        LabeledContent("Created", value: createdDate.formatted())
+                    }
+                    
+                    if let wordCount = response?.content?.split(separator: " ").count {
+                        LabeledContent("Word Count", value: "\(wordCount)")
+                    }
+                }
+                
+                Section("Sync Status") {
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        syncStatusBadge()
+                    }
+                    
+                    if let lastModified = request.lastModified {
+                        LabeledContent("Last Modified", value: lastModified.formatted())
+                    }
+                }
+            }
+            .navigationTitle("Poem Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        showingActionSheet = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Share Sheet
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Preview
+
+#Preview {
+    let mockRequest = RequestEnhanced(
+        userInput: "sunset over mountains",
+        userTopic: "sunset over mountains",
+        poemType: PoemType.all[0],
+        temperature: Temperature.all[0]
+    )
+    
+    let mockResponse = ResponseEnhanced(
+        requestId: mockRequest.id,
+        userId: "preview",
+        content: """
+        Golden fire descends
+        Mountain peaks embrace the light
+        Day becomes memory
+        """,
+        role: "assistant",
+        isFavorite: false
+    )
+    
+    mockRequest.responseId = mockResponse.id
+    mockRequest.syncStatus = .synced
+    mockResponse.syncStatus = .synced
+    
+    return ScrollView {
+        VStack {
+            PoemCardView(request: mockRequest)
+                .padding(.vertical)
+        }
+    }
+    .background(Color(.systemGroupedBackground))
 }

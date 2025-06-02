@@ -8,83 +8,120 @@ import SwiftUI
 import SwiftData
 
 struct FavoritesView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
+    @Environment(DataManager.self) private var dataManager
+    @Environment(AppState.self) private var appState
     
-    // Computed property for filtered favorites
     private var filteredFavorites: [RequestEnhanced] {
-        let favorites = dataManager.favoriteRequests()
+        let favorites = dataManager.favoriteRequests
         
-        if let filter = poemFilterSettings.activeFilter {
-            return favorites.filter { $0.poemType.id == filter.id }
+        if let filter = appState.activeFilter {
+            return favorites.filter { $0.poemType?.id == filter.id }
         } else {
             return favorites
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if filteredFavorites.isEmpty {
-                Text(poemFilterSettings.activeFilter == nil ? "No favorites yet." : "No \(poemFilterSettings.activeFilter!.name.lowercased()) favorites yet.")
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
-                    .padding()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 16) {
-                        ForEach(filteredFavorites, id: \.id) { req in
-                            FavoriteCardView(request: req)
+        NavigationStack {
+            VStack(spacing: 0) {
+                if filteredFavorites.isEmpty {
+                    EmptyFavoritesView()
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 16) {
+                            ForEach(filteredFavorites, id: \.id) { request in
+                                if let id = request.id {
+                                    FavoriteCardView(request: request)
+                                        .id(id)
+                                }
+                            }
                         }
+                        .padding(.vertical)
                     }
-                    .padding(.vertical)
                 }
             }
+            .navigationTitle("Favorites")
+            .navigationBarTitleDisplayMode(.large)
+            .background(Color(.systemGroupedBackground))
+            .padding(.horizontal)
         }
-        .navigationTitle("Favorites")
-        .padding(.horizontal)
     }
 }
 
-// A simplified card view for Favorites, no resend options
+struct EmptyFavoritesView: View {
+    @Environment(AppState.self) private var appState
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "heart.slash")
+                .font(.system(size: 60))
+                .foregroundColor(.gray)
+            
+            Text(appState.activeFilter == nil ?
+                 "No favorites yet" :
+                 "No \(appState.activeFilter!.name.lowercased()) favorites yet")
+                .font(.title3)
+                .foregroundColor(.secondary)
+            
+            Text("Tap the heart icon on any poem to add it to your favorites")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 struct FavoriteCardView: View {
-    @ObservedObject var request: RequestEnhanced
-    @EnvironmentObject private var dataManager: DataManager
+    let request: RequestEnhanced
+    @Environment(DataManager.self) private var dataManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(request.poemType.name)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if let poemType = request.poemType {
+                    Text(poemType.name)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
                 Spacer()
                 
                 Button {
                     toggleFavorite()
                 } label: {
                     if let response = dataManager.response(for: request) {
-                        Image(systemName: response.isFavorite ? "heart.fill" : "heart")
-                            .foregroundColor(response.isFavorite ? Color.purple.opacity(0.6) : .gray)
-                    } else {
-                        Image(systemName: "heart")
-                            .foregroundColor(.gray)
+                        Image(systemName: (response.isFavorite ?? false) ? "heart.fill" : "heart")
+                            .foregroundColor((response.isFavorite ?? false) ? Color.purple.opacity(0.6) : .gray)
                     }
                 }
             }
 
-            Text(request.userInput)
+            Text(request.userInput ?? "")
                 .font(.headline)
                 .foregroundColor(.primary)
 
             if let resp = dataManager.response(for: request) {
-                Text(resp.content)
+                Text(resp.content ?? "")
                     .font(.body)
                     .foregroundColor(.secondary)
+                    .lineLimit(5)
 
                 HStack {
+                    if resp.syncStatus != .synced {
+                        Image(systemName: "icloud.and.arrow.up")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                    
                     Spacer()
-                    Text(Self.timeFmt.string(from: resp.dateCreated))
-                        .font(.caption)
-                        .foregroundColor(.gray)
+                    
+                    if let date = resp.dateCreated {
+                        Text(timeFmt.string(from: date))
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                    }
                 }
             }
         }
@@ -94,7 +131,7 @@ struct FavoriteCardView: View {
         .shadow(color: .black.opacity(0.05), radius: 5, x: 0, y: 3)
     }
 
-    private static let timeFmt: DateFormatter = {
+    private let timeFmt: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "h:mma"
         f.amSymbol = "am"
@@ -103,73 +140,12 @@ struct FavoriteCardView: View {
     }()
 
     private func toggleFavorite() {
-        guard let resp = dataManager.response(for: request) else { return }
-        resp.isFavorite.toggle()
-        
-        do {
-            try dataManager.save(response: resp)
-        } catch {
-            print("Failed to save favorite status: \(error)")
+        Task {
+            do {
+                try await dataManager.toggleFavorite(for: request)
+            } catch {
+                print("Failed to toggle favorite: \(error)")
+            }
         }
     }
-}
-
-#Preview {
-    let container = try! ModelContainer(
-        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
-        configurations: ModelConfiguration(
-            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
-            isStoredInMemoryOnly: true
-        )
-    )
-    let context = container.mainContext
-    let dataManager = DataManager(context: context)
-
-    // Create mock PoemType and Temperature
-    let mockPoemType = PoemType.all[0]
-    let mockTemp = Temperature.all[0]
-
-    // Create first favorite request + response
-    let req1 = RequestEnhanced(
-        userInput: "whispers in the trees",
-        userTopic: "Nature",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let resp1 = ResponseEnhanced(
-        requestId: req1.id,
-        userId: "user123",
-        content: "Whispers in the trees\nSoftly speak of ancient winds\nEchoes in the leaves.",
-        role: "assistant",
-        isFavorite: true,
-        hasAnimated: true
-    )
-    req1.responseId = resp1.id
-
-    // Create second favorite request + response
-    let req2 = RequestEnhanced(
-        userInput: "ocean lullaby",
-        userTopic: "Sea",
-        poemType: mockPoemType,
-        temperature: mockTemp
-    )
-    let resp2 = ResponseEnhanced(
-        requestId: req2.id,
-        userId: "user456",
-        content: "Waves hum through the night\nCradling moonlight in rhythm\nOcean's lullaby.",
-        role: "assistant",
-        isFavorite: true,
-        hasAnimated: true
-    )
-    req2.responseId = resp2.id
-
-    // Save to DataManager
-    try! dataManager.save(request: req1)
-    try! dataManager.save(response: resp1)
-    try! dataManager.save(request: req2)
-    try! dataManager.save(response: resp2)
-
-    return FavoritesView()
-        .environmentObject(dataManager)
-        .environmentObject(PoemFilterSettings())
 }

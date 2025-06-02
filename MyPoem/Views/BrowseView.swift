@@ -3,28 +3,23 @@ import SwiftUI
 import SwiftData
 
 struct BrowseView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
-    @EnvironmentObject private var appUiSettings: AppUiSettings
-    @EnvironmentObject private var navigationManager: NavigationManager
-    @EnvironmentObject private var poemCreationState: PoemCreationState
-    @State private var navigationPath = NavigationPath()
-    
-    // Grid layout configuration
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
+    @State private var localNavigationPath = NavigationPath()
     
     var body: some View {
-        NavigationStack(path: $navigationPath) {
+        NavigationStack(path: $localNavigationPath) {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ], spacing: 16) {
                     ForEach(PoemType.all, id: \.id) { poemType in
                         PoemTypeTile(
                             poemType: poemType,
                             requestCount: dataManager.requestCount(for: poemType),
-                            recentPoem: dataManager.mostRecentRequest(for: poemType)
+                            recentPoem: dataManager.mostRecentRequest(for: poemType),
+                            syncPending: hasPendingSyncForType(poemType)
                         )
                     }
                 }
@@ -37,24 +32,20 @@ struct BrowseView: View {
             .navigationDestination(for: PoemType.self) { poemType in
                 PoemTypeDetailView(poemType: poemType)
             }
-            .onAppear {
-                print("Browse View Appear")
-                // Keep fullInteractive context for browsing
-                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.fullInteractive)
-            }
-            .onDisappear {
-                print("Browse View Disappear")
+        }
+        .onChange(of: appState.selectedTab) { oldValue, newValue in
+            // If Browse tab is reselected while already on Browse
+            if oldValue == 1 && newValue == 1 {
+                localNavigationPath = NavigationPath()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .popToBrowseRoot)) { _ in
-            // Pop to root when Browse tab is tapped while already on Browse
-            navigationPath = NavigationPath()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .browseNavigateTo)) { notification in
-            if let poemType = notification.userInfo?["poemType"] as? PoemType {
-                // Navigate to the specific poem type
-                navigationPath.append(poemType)
-            }
+    }
+    
+    private func hasPendingSyncForType(_ poemType: PoemType) -> Bool {
+        let requests = dataManager.requests(for: poemType)
+        return requests.contains { request in
+            request.syncStatus != .synced ||
+            (dataManager.response(for: request)?.syncStatus != .synced)
         }
     }
 }
@@ -64,8 +55,9 @@ struct PoemTypeTile: View {
     let poemType: PoemType
     let requestCount: Int
     let recentPoem: RequestEnhanced?
+    let syncPending: Bool
     
-    @EnvironmentObject private var dataManager: DataManager
+    @Environment(DataManager.self) private var dataManager
     
     var body: some View {
         NavigationLink(value: poemType) {
@@ -78,10 +70,18 @@ struct PoemTypeTile: View {
                     
                     Spacer()
                     
-                    Text("\(requestCount)")
-                        .font(.headline)
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
+                    HStack(spacing: 4) {
+                        if syncPending {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                        
+                        Text("\(requestCount)")
+                            .font(.headline)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                    }
                 }
                 
                 Spacer()
@@ -95,7 +95,7 @@ struct PoemTypeTile: View {
                     
                     if let recent = recentPoem,
                        let response = dataManager.response(for: recent) {
-                        Text(response.content)
+                        Text(response.content ?? "")
                             .font(.caption)
                             .foregroundColor(.white.opacity(0.8))
                             .lineLimit(3)
@@ -106,7 +106,7 @@ struct PoemTypeTile: View {
                             .foregroundColor(.white.opacity(0.7))
                             .italic()
                     } else {
-                        Text("Tap to explore")
+                        Text("Loading...")
                             .font(.caption)
                             .foregroundColor(.white.opacity(0.7))
                     }
@@ -151,12 +151,9 @@ struct PoemTypeTile: View {
 
 // MARK: - Poem Type Detail View
 struct PoemTypeDetailView: View {
-    @EnvironmentObject private var dataManager: DataManager
-    @EnvironmentObject private var appUiSettings: AppUiSettings
-    @EnvironmentObject private var poemFilterSettings: PoemFilterSettings
-    @EnvironmentObject private var poemCreationState: PoemCreationState
-    @EnvironmentObject private var navigationManager: NavigationManager
     let poemType: PoemType
+    @Environment(AppState.self) private var appState
+    @Environment(DataManager.self) private var dataManager
     
     private var requests: [RequestEnhanced] {
         dataManager.requests(for: poemType)
@@ -166,9 +163,6 @@ struct PoemTypeDetailView: View {
         MessageHistoryView(requests: requests)
             .navigationTitle(poemType.name)
             .navigationBarTitleDisplayMode(.inline)
-            .environmentObject(poemCreationState)
-            .environmentObject(navigationManager)
-            .environmentObject(poemFilterSettings)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Text("\(requests.count) poems")
@@ -182,83 +176,10 @@ struct PoemTypeDetailView: View {
             }
             .padding(.bottom, 80)
             .onAppear {
-                print("PoemTypeDetailView Appear")
-                // Set the filter to show we're viewing a specific type
-                poemFilterSettings.setFilter(poemType)
-                // Keep fullInteractive context
-                appUiSettings.setCardDisplayContext(displayContext: CardDisplayContext.fullInteractive)
+                appState.setFilter(poemType)
             }
             .onDisappear {
-                print("PoemTypeDetailView Disappear")
-                // Clear the filter when leaving
-                poemFilterSettings.resetFilter()
+                appState.resetFilters()
             }
     }
-}
-
-// MARK: - Preview
-#Preview("Browse View") {
-    let container = try! ModelContainer(
-        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
-        configurations: ModelConfiguration(
-            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
-            isStoredInMemoryOnly: true
-        )
-    )
-    let context = container.mainContext
-    let dataManager = DataManager(context: context)
-    
-    // Create sample data for different poem types
-    let samples: [(PoemType, String, String)] = [
-        (PoemType.all[0], "mountains in winter", "Snow caps the peaks high,\nSilent giants touch the sky,\nWinter's breath is cold."),
-        (PoemType.all[1], "ocean waves", "The endless ocean calls to me with ancient voices,\nWaves crash against the shore in rhythmic harmony,\nSalt spray dances in the morning light."),
-        (PoemType.all[0], "cherry blossoms", "Pink petals flutter,\nSpring's gentle promise unfolds,\nBeauty brief but true.")
-    ]
-    
-    for (poemType, topic, content) in samples {
-        let req = RequestEnhanced(
-            userInput: topic,
-            userTopic: topic,
-            poemType: poemType,
-            temperature: Temperature.all[0]
-        )
-        let resp = ResponseEnhanced(
-            requestId: req.id,
-            userId: "test-user",
-            content: content,
-            role: "assistant",
-            isFavorite: false,
-            hasAnimated: true
-        )
-        req.responseId = resp.id
-        
-        try! dataManager.save(request: req)
-        try! dataManager.save(response: resp)
-    }
-    
-    return BrowseView()
-        .environmentObject(dataManager)
-        .environmentObject(PoemFilterSettings())
-        .environmentObject(AppUiSettings())
-        .environmentObject(NavigationManager())
-        .environmentObject(PoemCreationState())
-}
-
-#Preview("Empty Browse View") {
-    let container = try! ModelContainer(
-        for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self,
-        configurations: ModelConfiguration(
-            schema: Schema([RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self]),
-            isStoredInMemoryOnly: true
-        )
-    )
-    let context = container.mainContext
-    let dataManager = DataManager(context: context)
-    
-    return BrowseView()
-        .environmentObject(dataManager)
-        .environmentObject(PoemFilterSettings())
-        .environmentObject(AppUiSettings())
-        .environmentObject(NavigationManager())
-        .environmentObject(PoemCreationState())
 }
