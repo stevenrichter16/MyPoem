@@ -5,10 +5,10 @@ import SwiftData
 struct BrowseView: View {
     @Environment(AppState.self) private var appState
     @Environment(DataManager.self) private var dataManager
-    @State private var localNavigationPath = NavigationPath()
     
     var body: some View {
-        NavigationStack(path: $localNavigationPath) {
+        @Bindable var appState = appState
+        NavigationStack(path: $appState.browseNavigationPath) {
             ScrollView {
                 LazyVGrid(columns: [
                     GridItem(.flexible(), spacing: 12),
@@ -31,12 +31,6 @@ struct BrowseView: View {
             .background(Color(.systemGroupedBackground))
             .navigationDestination(for: PoemType.self) { poemType in
                 PoemTypeDetailView(poemType: poemType)
-            }
-        }
-        .onChange(of: appState.selectedTab) { oldValue, newValue in
-            // If Browse tab is reselected while already on Browse
-            if oldValue == 1 && newValue == 1 {
-                localNavigationPath = NavigationPath()
             }
         }
     }

@@ -6,13 +6,15 @@ import Observation
 import Network
 
 @Observable
-@MainActor
 final class CloudKitSyncManager {
     // MARK: - Properties
     private(set) var syncState: SyncState = .idle
     private(set) var lastSyncDate: Date?
     private(set) var syncErrors: [SyncError] = []
     private(set) var pendingChangesCount: Int = 0
+    
+    // Configuration
+    private let config: AppConfiguration
     
     // CloudKit components
     @ObservationIgnored private let container: CKContainer
@@ -32,24 +34,35 @@ final class CloudKitSyncManager {
     }
     
     // MARK: - Initialization
-    init(modelContext: ModelContext) {
+    init(modelContext: ModelContext, configuration: AppConfiguration = DefaultConfiguration()) {
         self.modelContext = modelContext
-        self.container = CKContainer.default()
+        self.config = configuration
+        
+        // Use configured container or default
+        if let containerId = configuration.cloudKitContainerIdentifier {
+            self.container = CKContainer(identifier: containerId)
+        } else {
+            self.container = CKContainer.default()
+        }
         self.privateDatabase = container.privateCloudDatabase
         
         setupNetworkMonitoring()
         loadServerChangeToken()
         
-        Task {
-            await checkiCloudAvailability()
-            await performInitialSync()
-        }
+        // DISABLED: CloudKit sync
+        // Task {
+        //     await checkiCloudAvailability()
+        //     await performInitialSync()
+        // }
     }
     
     // MARK: - Public Methods
     
     /// Manually trigger a sync
     func syncNow() async {
+        // DISABLED: CloudKit sync - early return
+        return
+        
         guard isConnected else {
             addSyncError(.noNetwork)
             return
@@ -240,14 +253,17 @@ final class CloudKitSyncManager {
     // MARK: - Private Sync Methods
     
     private func performSync() async {
+        print("🔄 CloudKit sync starting...")
         syncState = .syncing
         clearSyncErrors()
         
         do {
             // 1. Push local changes
+            print("⬆️ Pushing local changes...")
             try await pushLocalChanges()
             
             // 2. Fetch remote changes
+            print("⬇️ Fetching remote changes...")
             try await fetchRemoteChanges()
             
             // 3. Update sync status
@@ -296,12 +312,14 @@ final class CloudKitSyncManager {
             }
         }
         
-        // Batch save to CloudKit
+        // Batch save to CloudKit with configured batch size
         if !records.isEmpty {
-            let operation = CKModifyRecordsOperation(
-                recordsToSave: records,
-                recordIDsToDelete: nil
-            )
+            // Process in batches according to configuration
+            for batch in records.chunked(into: config.syncBatchSize) {
+                let operation = CKModifyRecordsOperation(
+                    recordsToSave: batch,
+                    recordIDsToDelete: nil
+                )
             
             operation.savePolicy = .changedKeys
             operation.perRecordSaveBlock = { recordID, result in
@@ -315,7 +333,13 @@ final class CloudKitSyncManager {
                 }
             }
             
-            try await privateDatabase.add(operation)
+                try await privateDatabase.add(operation)
+                
+                // Add delay between batches to avoid rate limiting
+                if batch.count == config.syncBatchSize {
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+            }
         }
     }
     
@@ -614,8 +638,9 @@ final class CloudKitSyncManager {
                 self?.isConnected = path.status == .satisfied
                 
                 if path.status == .satisfied {
+                    // DISABLED: CloudKit sync
                     // Network restored, trigger sync
-                    await self?.performSync()
+                    // await self?.performSync()
                 }
             }
         }
@@ -689,9 +714,9 @@ final class CloudKitSyncManager {
     
     // MARK: - Zone Management
     
-    private var defaultZoneID: CKRecordZone.ID {
+    @ObservationIgnored private lazy var defaultZoneID: CKRecordZone.ID = {
         CKRecordZone(zoneName: "MyPoemZone").zoneID
-    }
+    }()
     
     private func performInitialSync() async {
         // Create custom zone if needed

@@ -145,7 +145,10 @@ final class DataManager {
     }
     
     func triggerSync() async {
-        await syncManager.syncNow()
+        // DISABLED: CloudKit sync
+        // Task.detached { [weak self] in
+        //     await self?.syncManager.syncNow()
+        // }
     }
     
     // MARK: - Data Operations with CloudKit
@@ -177,10 +180,10 @@ final class DataManager {
         
         print("✅ Created request: \(request.id ?? "unknown")")
         
-        // Trigger background sync
-        Task {
-            await syncManager.syncNow()
-        }
+        // DISABLED: CloudKit sync
+        // Task.detached { [weak self] in
+        //     await self?.syncManager.syncNow()
+        // }
         
         return request
     }
@@ -214,14 +217,14 @@ final class DataManager {
         
         print("✅ Saved response for request: \(requestId)")
         
-        // Trigger background sync
-        Task {
-            await syncManager.syncNow()
-        }
+        // DISABLED: CloudKit sync
+        // Task.detached { [weak self] in
+        //     await self?.syncManager.syncNow()
+        // }
     }
     
     func updateResponse(_ response: ResponseEnhanced) async throws {
-        guard responses.contains(where: { $0.id == response.id }) else {
+        guard let index = responses.firstIndex(where: { $0.id == response.id }) else {
             throw DataError.responseNotFound(response.id ?? "nil")
         }
         
@@ -231,6 +234,10 @@ final class DataManager {
         
         // Save changes
         try modelContext.save()
+        
+        // Force observable update by reassigning the object in the array
+        // This is the SAME object with the SAME id, just reassigned to trigger SwiftUI updates
+        responses[index] = response
         
         // Update cache
         await MainActor.run {
@@ -243,10 +250,10 @@ final class DataManager {
         
         print("✅ Updated response: \(response.id ?? "unknown")")
         
-        // Trigger sync
-        Task {
-            await syncManager.syncNow()
-        }
+        // DISABLED: CloudKit sync
+        // Task.detached { [weak self] in
+        //     await self?.syncManager.syncNow()
+        // }
     }
     
     func deleteRequest(_ request: RequestEnhanced) async throws {
@@ -278,9 +285,10 @@ final class DataManager {
         print("✅ Deleted request: \(request.id ?? "unknown")")
         
         // Note: CloudKit deletion will be handled by sync manager
-        Task {
-            await syncManager.syncNow()
-        }
+        // DISABLED: CloudKit sync
+        // Task {
+        //     await syncManager.syncNow()
+        // }
     }
     
     func toggleFavorite(for request: RequestEnhanced) async throws {
@@ -296,7 +304,8 @@ final class DataManager {
     
     func response(for request: RequestEnhanced) -> ResponseEnhanced? {
         guard let id = request.id else { return nil }
-        return responseCache[id]
+        // Return from the observable responses array to trigger view updates
+        return responses.first { $0.requestId == id }
     }
     
     func request(withId id: String) -> RequestEnhanced? {
@@ -490,10 +499,10 @@ extension DataManager {
         modelContext.insert(newRevision)
         try modelContext.save()
         
-        // Trigger sync
-        Task {
-            await syncManager.syncNow()
-        }
+        // DISABLED: CloudKit sync
+        // Task {
+        //     await syncManager.syncNow()
+        // }
         
         print("✅ Created revision #\(newRevision.revisionNumber ?? 0) for request: \(request.id ?? "unknown")")
         
@@ -560,7 +569,7 @@ extension DataManager {
         response.content = newContent
         response.lastModified = Date()
         response.syncStatus = .pending
-        try await updateResponse(response)
+        //try await updateResponse(response)
         
         // Create revision for new content
         try await createRevision(

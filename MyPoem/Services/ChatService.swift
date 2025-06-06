@@ -9,6 +9,7 @@ final class ChatService {
     
     private let dataManager: DataManager
     private weak var appState: AppState?
+    private let config: AppConfiguration
     
     // MARK: - State
     
@@ -24,9 +25,10 @@ final class ChatService {
     
     // MARK: - Initialization
     
-    init(dataManager: DataManager, appState: AppState) {
+    init(dataManager: DataManager, appState: AppState, configuration: AppConfiguration = DefaultConfiguration()) {
         self.dataManager = dataManager
         self.appState = appState
+        self.config = configuration
         
         // Set up reactive observation
         setupObservation()
@@ -140,13 +142,26 @@ final class ChatService {
         let userPrompt = "\(type.prompt)\(topic)"
         
         // Call OpenAI (handling optional properties)
-        let generatedContent = try await OpenAIClient.shared.chatCompletion(
-            systemPrompt: systemPrompt,
-            userPrompt: userPrompt,
-            temperature: temperature.value
-        )
+        print("About to call OpenAI...")
+        print("Thread: \(Thread.current)")
         
-        return generatedContent
+        do {
+            print("=== CALLING OPENAI CLIENT ===")
+            let generatedContent = try await OpenAIClient.shared.chatCompletion(
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                temperature: temperature.value,
+                model: config.openAIModel
+            )
+            print("=== RETURNED FROM OPENAI CLIENT ===")
+            print("After Returning from OpenAI Chat Completion - \(generatedContent.prefix(50))...")
+            print("Thread after OpenAI: \(Thread.current)")
+            print("About to return from generatePoem")
+            return generatedContent
+        } catch {
+            print("❌ OpenAI call failed in generatePoem: \(error)")
+            throw error
+        }
     }
     
     // MARK: - Manual Generation Methods
@@ -194,6 +209,7 @@ final class ChatService {
     }
     
     func regeneratePoem(for request: RequestEnhanced) async throws {
+        print("🔄 regeneratePoem called on thread: \(Thread.current)")
         isGenerating = true
         lastError = nil
         
@@ -208,6 +224,8 @@ final class ChatService {
             throw ChatServiceError.invalidRequest("Missing required data for regeneration")
         }
         
+        // DISABLED: Revision creation for debugging
+        /*
         // Create a revision of the current content before regenerating
         if let existingResponse = dataManager.response(for: request),
            let currentContent = existingResponse.content,
@@ -226,21 +244,51 @@ final class ChatService {
                 // Continue with regeneration even if revision fails
             }
         }
+        */
+        
+        print("in ChatService.regeneratePoem right before calling ChatService.generatePoem()")
+        
+        // Get the existing response first
+        guard let existingResponse = dataManager.response(for: request) else {
+            print("⚠️ No existing response found")
+            throw ChatServiceError.invalidRequest("No response found for regeneration")
+        }
+        
+        print("🔍 Found existing response to update: \(existingResponse.id ?? "unknown")")
         
         // Generate new poem
-        let poemContent = try await generatePoem(
-            type: poemType,
-            topic: topic,
-            temperature: temperature
-        )
+        print("=== BEFORE GENERATE POEM ===")
+        let poemContent: String
+        do {
+            poemContent = try await generatePoem(
+                type: poemType,
+                topic: topic,
+                temperature: temperature
+            )
+        } catch {
+            print("❌ Failed to generate poem in regeneratePoem")
+            throw error
+        }
         
-        // Check if response exists and update it, or create new
-        if let existingResponse = dataManager.response(for: request) {
-            existingResponse.content = poemContent
-            existingResponse.lastModified = Date()
-            existingResponse.syncStatus = .pending
-            try await dataManager.updateResponse(existingResponse)
+        print("=== AFTER GENERATE POEM ===")
+        print("Generated content length: \(poemContent.count) characters")
+        print("🎨 Generated poem content: \(poemContent.prefix(50))...")
+        
+        // EXPERIMENT: Create new content string completely disconnected from async context
+        let newContent = String(poemContent.map { $0 })  // Force character-by-character copy
+        print("🔄 Created new content string: \(newContent.count) chars")
+        
+        // Update the response with new content
+        existingResponse.content = newContent
+        existingResponse.lastModified = Date()
+        existingResponse.syncStatus = .pending
+        
+        print("💾 About to call updateResponse")
+        try await dataManager.updateResponse(existingResponse)
+        print("✅ updateResponse completed")
             
+            // DISABLED: Revision creation for debugging
+            /*
             // Create a revision for the new regenerated content
             do {
                 try await dataManager.createRevision(
@@ -253,31 +301,7 @@ final class ChatService {
             } catch {
                 print("⚠️ Failed to create revision for new content: \(error)")
             }
-        } else {
-            // Create new response
-            let response = ResponseEnhanced(
-                requestId: request.id,
-                userId: "user",
-                content: poemContent,
-                role: "assistant",
-                isFavorite: false
-            )
-            
-            try await dataManager.saveResponse(response)
-            
-            // Create initial revision for the new poem
-            do {
-                try await dataManager.createRevision(
-                    for: request,
-                    content: poemContent,
-                    changeNote: "Initial AI generated poem",
-                    changeType: .initial
-                )
-                print("📝 Created initial revision")
-            } catch {
-                print("⚠️ Failed to create initial revision: \(error)")
-            }
-        }
+            */
         
         print("✅ Poem regenerated for request: \(request.id ?? "unknown")")
     }

@@ -15,7 +15,7 @@ import Observation
 final class AppState {
     // MARK: - Navigation State
     private(set) var selectedTab: Int = 0
-    private(set) var browseNavigationPath = NavigationPath()
+    var browseNavigationPath = NavigationPath()
     
     // MARK: - Filtering State
     private(set) var activeFilter: PoemType? = nil
@@ -167,6 +167,9 @@ final class AppState {
         
         print("✅ Poem creation finished")
         
+        // Post notification to scroll to top in Create tab
+        NotificationCenter.default.post(name: .scrollToTopAfterCreation, object: nil)
+        
         // Auto-dismiss after delay
         Task {
             try? await Task.sleep(for: .seconds(3))
@@ -287,6 +290,7 @@ final class AppState {
 
 extension Notification.Name {
     static let scrollToTop = Notification.Name("scrollToTop")
+    static let scrollToTopAfterCreation = Notification.Name("scrollToTopAfterCreation")
     static let refreshContent = Notification.Name("refreshContent")
     static let syncCompleted = Notification.Name("syncCompleted")
     static let syncConflictDetected = Notification.Name("syncConflictDetected")

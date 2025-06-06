@@ -8,24 +8,27 @@
 import Foundation
 
 /// A simple singleton wrapper around the OpenAI Chat Completions endpoint
-actor OpenAIClient {
-  static let shared = OpenAIClient()
+final class OpenAIClient {
+    static let shared = OpenAIClient()
 
+    private let config: AppConfiguration
     private var apiKey: String
-
-    private init() { // Make init private for singleton
-        // Load the API key from Secrets.plist
-        guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
-              let nsDictionary = NSDictionary(contentsOfFile: path),
-              let key = nsDictionary["OPENAI_API_KEY"] as? String else {
-            fatalError("Missing or invalid OPENAI_API_KEY in Secrets.plist. Please create Secrets.plist (from Secrets.plist.example) and add your key.")
-        }
+    private let session: URLSession
+    private var requestCount = 0
+    private let requestQueue = DispatchQueue(label: "com.mypoem.openai", qos: .userInitiated)
+    
+    
+    private init() {
+        self.config = DefaultConfiguration()
+        self.apiKey = config.openAIAPIKey
         
-        if key.isEmpty || key == "YOUR_API_KEY_GOES_HERE" {
-             fatalError("OPENAI_API_KEY is empty or placeholder in Secrets.plist. Please add your actual key.")
-        }
-        
-        self.apiKey = key
+        // Create a custom session with timeout configuration
+        let sessionConfig = URLSessionConfiguration.default
+        sessionConfig.timeoutIntervalForRequest = 30.0
+        sessionConfig.timeoutIntervalForResource = 60.0
+        sessionConfig.httpMaximumConnectionsPerHost = 2
+        sessionConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.session = URLSession(configuration: sessionConfig)
     }
 
     
@@ -34,11 +37,15 @@ actor OpenAIClient {
   func chatCompletion(
     systemPrompt: String = "You are an award-winning poet .",
     userPrompt:   String,
-    temperature:  Double = 1.0,
-    model: String = "gpt-4"
+    temperature:  Double? = nil,
+    model: String? = nil
   ) async throws -> String {
+    // Use configuration values if not overridden
+    let actualTemperature = temperature ?? config.openAITemperature
+    let actualModel = model ?? config.openAIModel
+    
     // 1) Build URL + request
-    let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+    let url = URL(string: config.openAIEndpoint)!
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -56,20 +63,25 @@ actor OpenAIClient {
     
     }
     let body = ChatRequest(
-        model: model,
+        model: actualModel,
       messages: [
         ChatMessage(role: "system", content: systemPrompt),
         ChatMessage(role: "user",   content: userPrompt)
       ],
-      temperature: temperature
+      temperature: actualTemperature
     
     )
-      print("REQUEST BODY: \(body)")
+      if config.enableDebugLogging {
+          print("REQUEST BODY: \(body)")
+      }
     req.httpBody = try JSONEncoder().encode(body)
-      print("REQUEST BODY: \(req.httpBody!)")
+      if config.enableDebugLogging {
+          print("REQUEST BODY: \(req.httpBody!)")
+      }
 
     // 3) Fire it off
-    let (data, resp) = try await URLSession.shared.data(for: req)
+    let (data, resp) = try await session.data(for: req)
+    
     guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
       let msg = String(data: data, encoding: .utf8) ?? "(no body)"
       throw NSError(domain: "OpenAI", code: 1, userInfo: [
@@ -89,14 +101,20 @@ actor OpenAIClient {
     }
     let chat = try JSONDecoder().decode(ChatResponse.self, from: data)
     guard let first = chat.choices.first?.message.content else {
-        print("NO CHOICES IN RESPONSE:", chat.choices)
+        if config.enableDebugLogging {
+            print("NO CHOICES IN RESPONSE:", chat.choices)
+        }
       throw NSError(domain: "OpenAI", code: 2, userInfo: [
         
         NSLocalizedDescriptionKey: "No choices in response"
       ])
     }
-      print("RESULT: \(first.trimmingCharacters(in: .whitespacesAndNewlines))")
-      print("RESULT: \(chat.choices)")
-    return first.trimmingCharacters(in: .whitespacesAndNewlines)
+      if config.enableDebugLogging {
+          print("RESULT: \(first.trimmingCharacters(in: .whitespacesAndNewlines))")
+          print("RESULT: \(chat.choices)")
+      }
+    // Simple return without any complexity
+    let result = first.trimmingCharacters(in: .whitespacesAndNewlines)
+    return result
   }
 }

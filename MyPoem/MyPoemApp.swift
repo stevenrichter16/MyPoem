@@ -8,6 +8,9 @@ struct MyPoemApp: App {
     // Create model container with CloudKit support
     let modelContainer: ModelContainer
     
+    // Configuration
+    let configuration: AppConfiguration = DefaultConfiguration()
+    
     // Create our observable services
     @State private var dataManager: DataManager
     @State private var appState = AppState()
@@ -27,7 +30,7 @@ struct MyPoemApp: App {
             let modelConfiguration = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: false,
-                cloudKitDatabase: .automatic // Enable CloudKit sync
+                cloudKitDatabase: .none // Disable CloudKit sync
             )
             
             modelContainer = try ModelContainer(
@@ -44,8 +47,8 @@ struct MyPoemApp: App {
         // Configure context for CloudKit
         context.autosaveEnabled = true
         
-        // Create sync manager first
-        let sm = CloudKitSyncManager(modelContext: context)
+        // Create sync manager first with configuration
+        let sm = CloudKitSyncManager(modelContext: context, configuration: configuration)
         
         // Create data manager with sync support
         let dm = DataManager(modelContext: context, syncManager: sm)
@@ -53,8 +56,8 @@ struct MyPoemApp: App {
         // Create app state
         let appState = AppState()
         
-        // Create chat service
-        let cs = ChatService(dataManager: dm, appState: appState)
+        // Create chat service with configuration
+        let cs = ChatService(dataManager: dm, appState: appState, configuration: configuration)
         
         // Initialize state properties
         _syncManager = State(initialValue: sm)
@@ -70,6 +73,7 @@ struct MyPoemApp: App {
                 .environment(dataManager)
                 .environment(chatService)
                 .environment(syncManager)
+                .environment(\.configuration, configuration)
                 .modelContainer(modelContainer)
                 .onAppear {
                     setupCloudKit()
@@ -83,6 +87,9 @@ struct MyPoemApp: App {
     }
     
     private func setupCloudKit() {
+        // DISABLED: CloudKit completely
+        return
+        
         // Request CloudKit permissions if needed
         CKContainer.default().accountStatus { status, error in
             switch status {
@@ -134,8 +141,50 @@ struct MyPoemApp: App {
             try? await dataManager.markAllForSync()
             UserDefaults.standard.set(true, forKey: "HasPerformedCloudKitMigration")
             
-            // Trigger initial sync
-            await syncManager.syncNow()
+            // DISABLED: CloudKit sync
+            // await syncManager.syncNow()
+        }
+    }
+    
+    private func clearAllDataForDebugging() async {
+        do {
+            // Fetch and delete all data
+            let context = modelContainer.mainContext
+            
+            // Delete all responses
+            let responses = try context.fetch(FetchDescriptor<ResponseEnhanced>())
+            for response in responses {
+                context.delete(response)
+            }
+            
+            // Delete all requests
+            let requests = try context.fetch(FetchDescriptor<RequestEnhanced>())
+            for request in requests {
+                context.delete(request)
+            }
+            
+            // Delete all poem groups
+            let groups = try context.fetch(FetchDescriptor<PoemGroup>())
+            for group in groups {
+                context.delete(group)
+            }
+            
+            // Delete all revisions
+            let revisions = try context.fetch(FetchDescriptor<PoemRevision>())
+            for revision in revisions {
+                context.delete(revision)
+            }
+            
+            // Save the deletions
+            try context.save()
+            
+            print("✅ Cleared all data: \(responses.count) responses, \(requests.count) requests, \(groups.count) groups, \(revisions.count) revisions")
+            
+            // Also clear the migration flag
+            UserDefaults.standard.set(false, forKey: "HasPerformedCloudKitMigration")
+            
+        } catch {
+            print("❌ Failed to clear data: \(error)")
         }
     }
 }

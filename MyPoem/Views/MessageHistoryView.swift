@@ -10,13 +10,16 @@ struct MessageHistoryView: View {
     
     @State private var scrollPosition: String?
     @State private var isRefreshing: Bool = false
+    @Namespace private var topID
     
     var body: some View {
-        ScrollView {
-            // Header
-            MinimalistHeader()
-                .padding(.top, 50)
-                .padding(.bottom, 20)
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Header with ID for scrolling
+                MinimalistHeader()
+                    .padding(.top, 50)
+                    .padding(.bottom, 20)
+                    .id(topID)
             
             // Content
             if requests.isEmpty {
@@ -24,7 +27,7 @@ struct MessageHistoryView: View {
                     .frame(minHeight: 400)
                     .padding(.top, 100)
             } else {
-                LazyVStack(spacing: 60) {
+                LazyVStack(spacing: 0) {
                     ForEach(Array(requests.enumerated()), id: \.element.id) { index, request in
                         if let id = request.id {
                             PoemCardView(request: request)
@@ -41,7 +44,27 @@ struct MessageHistoryView: View {
                         }
                     }
                 }
-                .padding(.vertical, 20)
+            }
+            }
+            .onChange(of: requests.count) { oldCount, newCount in
+                // Scroll to top when a new poem is added
+                if newCount > oldCount {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        proxy.scrollTo(topID, anchor: .top)
+                    }
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .scrollToTopAfterCreation)) { _ in
+                // Scroll to top when poem creation completes
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(topID, anchor: .top)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .scrollToTop)) { _ in
+                // Scroll to top on tab reselection
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    proxy.scrollTo(topID, anchor: .top)
+                }
             }
         }
         .background(Color(hex: "FAFAFA"))

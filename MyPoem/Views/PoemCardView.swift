@@ -42,38 +42,40 @@ struct PoemCardView: View {
     // MARK: - Body
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Topic header
-            if let topic = request.userInput {
-                Text(topic.uppercased())
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(Color(hex: "666666"))
-                    .kerning(1)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 12)
-            }
-            
             // Main card content
             VStack(alignment: .leading, spacing: 0) {
-                // Revision indicator (if has revisions)
-                if revisionCount > 1 {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color(hex: "34C759"))
-                            .frame(width: 6, height: 6)
-                        Text("v\(revisionCount)")
-                            .font(.system(size: 11))
-                            .foregroundColor(Color(hex: "666666"))
+                // Topic header with revision indicator
+                HStack(alignment: .center, spacing: 0) {
+                    if let topic = request.userInput {
+                        Text(topic)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(Color(hex: "000000"))
+                            .lineLimit(1)
                     }
-                    .padding(.bottom, 16)
+                    
+                    Spacer(minLength: 12)
+                    
+                    // Revision indicator
+                    if revisionCount > 1 {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color(hex: "34C759"))
+                                .frame(width: 5, height: 5)
+                            Text("v\(revisionCount)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color(hex: "34C759"))
+                        }
+                    }
                 }
+                .padding(.bottom, 12)
                 
                 // Poem content with expand/collapse
                 if let content = response?.content {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(content)
-                            .font(.custom("Georgia", size: 18))
-                            .lineSpacing(8)
-                            .foregroundColor(Color(hex: "2A2A2A"))
+                            .font(.system(size: 16, weight: .regular))
+                            .lineSpacing(6)
+                            .foregroundColor(Color(hex: "1A1A1A"))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .lineLimit(isResponseExpanded ? nil : collapsedLineLimit)
                             .background(heightMeasurementOverlay(content: content))
@@ -87,14 +89,14 @@ struct PoemCardView: View {
                                 }
                             }) {
                                 Text(isResponseExpanded ? "Show less" : "Show more")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(Color(hex: "666666"))
-                                    .padding(.top, 12)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(Color(hex: "007AFF"))
+                                    .padding(.top, 8)
                             }
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
-                } else if chatService.isGenerating || isRegenerating {
+                } else if (chatService.isGenerating && isActiveGeneration()) || isRegenerating {
                     HStack(spacing: 12) {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -173,31 +175,24 @@ struct PoemCardView: View {
                         )
                     }
                 }
-                .padding(.top, 20)
+                .padding(.top, 16)
             }
-            .padding(24)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.white)
-                    .shadow(
-                        color: .black.opacity(isHovered ? 0.1 : 0.05),
-                        radius: isHovered ? 30 : 20,
-                        x: 0,
-                        y: isHovered ? 8 : 2
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.black.opacity(isHovered ? 0.1 : 0), lineWidth: 1)
-            )
-            .offset(x: isHovered ? 5 : 0)
-            .onHover { hovering in
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    isHovered = hovering
-                }
-            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 20)
+            .background(Color(hex: "FAFAFA"))
         }
-        .padding(.horizontal, 20)
+        .background(Color.white)
+        .overlay(
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(Color.black.opacity(0.04))
+                    .frame(height: 1)
+                Spacer()
+                Rectangle()
+                    .fill(Color.black.opacity(0.08))
+                    .frame(height: 1)
+            }
+        )
         .opacity(isDeleting ? 0.5 : 1.0)
         .scaleEffect(isDeleting ? 0.95 : 1.0)
         .confirmationDialog("More Actions", isPresented: $showingMoreMenu) {
@@ -284,6 +279,20 @@ struct PoemCardView: View {
         }
     }
     
+    // MARK: - Helper Methods
+    private func isActiveGeneration() -> Bool {
+        // Check if this card's request matches the active poem creation
+        guard let creation = appState.poemCreation,
+              let topic = request.userTopic,
+              let type = request.poemType else {
+            return false
+        }
+        
+        // For resend as new type, the creation will have different type but same topic
+        // So we should NOT show loading for the original card
+        return creation.topic == topic && creation.type.id == type.id
+    }
+    
     // MARK: - Actions
     private func resendRequest(as newPoemType: PoemType) {
         guard let topic = request.userTopic else { return }
@@ -308,13 +317,29 @@ struct PoemCardView: View {
     private func regeneratePoem() {
         isRegenerating = true
         
+        // Add regeneration tracking
+        let regenerationId = UUID().uuidString.prefix(8)
+        print("🔄 [\(regenerationId)] Starting regeneration for request: \(request.id ?? "unknown")")
+        print("   Topic: \(request.userTopic ?? "none")")
+        print("   Type: \(request.poemType?.name ?? "none")")
+        
         Task {
             do {
+                print("🔄 [\(regenerationId)] Calling chatService.regeneratePoem...")
                 try await chatService.regeneratePoem(for: request)
-                isRegenerating = false
+                print("✅ [\(regenerationId)] chatService.regeneratePoem completed successfully")
+                print("in PoemCardView AFTER chatService.regeneratePoem call")
+                
+                await MainActor.run {
+                    print("🏁 [\(regenerationId)] Resetting isRegenerating flag")
+                    isRegenerating = false
+                }
             } catch {
-                isRegenerating = false
-                appState.showCloudKitError("Failed to regenerate poem: \(error.localizedDescription)")
+                print("❌ [\(regenerationId)] Regeneration failed: \(error)")
+                await MainActor.run {
+                    isRegenerating = false
+                    appState.showCloudKitError("Failed to regenerate poem: \(error.localizedDescription)")
+                }
             }
         }
     }
