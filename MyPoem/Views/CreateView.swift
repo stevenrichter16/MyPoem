@@ -14,7 +14,7 @@ struct CreateView: View {
         if let filter = appState.activeFilter {
             return dataManager.requests(for: filter)
         } else {
-            return dataManager.sortedRequests
+            return dataManager.sortedRequests // also dataManager.requests
         }
     }
     
@@ -26,7 +26,7 @@ struct CreateView: View {
                     .ignoresSafeArea()
                 
                 // Message history with new styling
-                MessageHistoryView(requests: displayedRequests)
+                MessageHistoryView(requests: displayedRequests) // also dataManager.requests
                     .padding(.bottom, 80) // Space for tab bar
                 
                 // Minimalist Floating Action Button

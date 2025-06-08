@@ -136,8 +136,8 @@ final class AppState {
     }
     
     // MARK: - Poem Creation Methods
-    
     func startPoemCreation(type: PoemType, topic: String) {
+        print("in AppState.startPoemCreation")
         // Validate input
         let trimmedTopic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTopic.isEmpty else {

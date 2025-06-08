@@ -49,15 +49,39 @@ struct MessageHistoryView: View {
             .onChange(of: requests.count) { oldCount, newCount in
                 // Scroll to top when a new poem is added
                 if newCount > oldCount {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        proxy.scrollTo(topID, anchor: .top)
+                    // Check if we're in a filtered view (PoemTypeDetailView)
+                    if let activeFilter = appState.activeFilter,
+                       let latestCreation = appState.poemCreation {
+                        // Only scroll if the new poem matches the current filter
+                        if latestCreation.type.id == activeFilter.id {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                proxy.scrollTo(topID, anchor: .top)
+                            }
+                        }
+                    } else {
+                        // In CreateView (no filter), always scroll
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(topID, anchor: .top)
+                        }
                     }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .scrollToTopAfterCreation)) { _ in
                 // Scroll to top when poem creation completes
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(topID, anchor: .top)
+                // Check if we're in a filtered view (PoemTypeDetailView)
+                if let activeFilter = appState.activeFilter,
+                   let latestCreation = appState.poemCreation {
+                    // Only scroll if the new poem matches the current filter
+                    if latestCreation.type.id == activeFilter.id {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(topID, anchor: .top)
+                        }
+                    }
+                } else {
+                    // In CreateView (no filter), always scroll
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        proxy.scrollTo(topID, anchor: .top)
+                    }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .scrollToTop)) { _ in

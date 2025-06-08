@@ -6,26 +6,22 @@ import Observation
 @MainActor
 final class ChatService {
     // MARK: - Dependencies
-    
     private let dataManager: DataManager
     private weak var appState: AppState?
     private let config: AppConfiguration
     
     // MARK: - State
-    
-    @ObservationIgnored private var activeGenerationTask: Task<Void, Never>?
     private(set) var isGenerating: Bool = false
     private(set) var lastError: Error?
     
     // MARK: - Performance Tracking
-    
     @ObservationIgnored private var generationStartTime: Date?
     private(set) var averageGenerationTime: TimeInterval = 0
     @ObservationIgnored private var generationCount: Int = 0
     
     // MARK: - Initialization
-    
     init(dataManager: DataManager, appState: AppState, configuration: AppConfiguration = DefaultConfiguration()) {
+        print("in ChatService init")
         self.dataManager = dataManager
         self.appState = appState
         self.config = configuration
@@ -34,97 +30,98 @@ final class ChatService {
         setupObservation()
     }
     
-    // MARK: - Reactive Setup
-    
-    private func setupObservation() {
-        Task {
-            await observeAppStateChanges()
-        }
+    deinit {
+        observationTask?.cancel()
     }
     
-    private func observeAppStateChanges() async {
-        while true {
-            await withObservationTracking {
+    // MARK: - Reactive Setup
+    
+    @ObservationIgnored private var observationTask: Task<Void, Never>?
+    @ObservationIgnored private var lastProcessedId: UUID?
+    
+    private func setupObservation() {
+        observationTask = Task { [weak self] in
+            while !Task.isCancelled {
                 // Check if there's an active creation that needs processing
-                if let creation = appState?.poemCreation,
+                if let self = self,
+                   let creation = self.appState?.poemCreation,
                    creation.isCreating,
-                   !isGenerating {
-                    // Found a new creation to process
-                    Task {
-                        await handlePoemCreation(creation)
+                   creation.id != self.lastProcessedId,
+                   !self.isGenerating {
+                    
+                    print("🔍 Found new poem creation to process: \(creation.id)")
+                    self.lastProcessedId = creation.id
+                    
+                    await MainActor.run {
+                        self.isGenerating = true
+                    }
+                    
+                    do {
+                        try await self.handlePoemCreation(creation)
+                    } catch {
+                        await MainActor.run {
+                            self.lastError = error
+                        }
+                        await self.appState?.showCloudKitError(error.localizedDescription)
+                        await self.appState?.cancelPoemCreation()
+                    }
+                    
+                    await MainActor.run {
+                        self.isGenerating = false
                     }
                 }
-            } onChange: {
-                // This closure is called when observed properties change
-                // We'll re-run the observation
+                
+                // Small delay to prevent tight loops
+                try? await Task.sleep(for: .milliseconds(100))
             }
-            
-            // Small delay to prevent tight loops
-            try? await Task.sleep(for: .milliseconds(100))
         }
     }
     
     // MARK: - Poem Generation
     
-    private func handlePoemCreation(_ creation: AppState.PoemCreationInfo) async {
-        // Prevent duplicate generation
-        guard !isGenerating else { return }
-        
-        isGenerating = true
-        lastError = nil
+    private func handlePoemCreation(_ creation: AppState.PoemCreationInfo) async throws {
         generationStartTime = Date()
         
         print("🤖 Starting poem generation: \(creation.type.name) about '\(creation.topic)'")
         
-        do {
-            // Create the request in DataManager (with CloudKit support)
-            let request = try await dataManager.createRequest(
-                topic: creation.topic,
-                poemType: creation.type,
-                temperature: Temperature.all[0] // Default temperature
-            )
-            
-            // Generate the poem
-            let poemContent = try await generatePoem(
-                type: creation.type,
-                topic: creation.topic,
-                temperature: Temperature.all[0]
-            )
-            
-            // Create and save the response (will trigger CloudKit sync)
-            let response = ResponseEnhanced(
-                requestId: request.id,
-                userId: "user",
-                content: poemContent,
-                role: "assistant",
-                isFavorite: false
-            )
-            
-            try await dataManager.saveResponse(response)
-            
-            // Update generation metrics
-            updateGenerationMetrics()
-            
-            // Mark creation as complete in AppState
-            await appState?.finishPoemCreation()
-            
-            print("✅ Poem generation completed successfully")
-            
-        } catch {
-            lastError = error
-            print("❌ Poem generation failed: \(error)")
-            
-            // Show error in UI
-            await appState?.showCloudKitError("Failed to generate poem: \(error.localizedDescription)")
-            
-            // Cancel the creation on error
-            await appState?.cancelPoemCreation()
-        }
+        // Create the request in DataManager (with CloudKit support)
+        let request = try await dataManager.createRequest(
+            topic: creation.topic,
+            poemType: creation.type,
+            temperature: Temperature.all[0] // Default temperature
+        )
         
-        isGenerating = false
+        // Generate the poem
+        let poemContent = try await generatePoem(
+            type: creation.type,
+            topic: creation.topic,
+            temperature: Temperature.all[0],
+            config: self.config
+        )
+        
+        print("in ChatService.handlePoemCreation after generatePoem() call")
+        
+        // Create and save the response (will trigger CloudKit sync)
+        let response = ResponseEnhanced(
+            requestId: request.id,
+            userId: "user",
+            content: poemContent,
+            role: "assistant",
+            isFavorite: false
+        )
+        
+        try await dataManager.saveResponse(response)
+        
+        // Update generation metrics
+        updateGenerationMetrics()
+        
+        // Mark creation as complete in AppState
+        await appState?.finishPoemCreation()
+        
+        print("✅ Poem generation completed successfully")
     }
     
-    private func generatePoem(type: PoemType, topic: String, temperature: Temperature) async throws -> String {
+    private nonisolated func generatePoem(type: PoemType, topic: String, temperature: Temperature, config: AppConfiguration) async throws -> String {
         // Build the prompt based on poem type
         let systemPrompt = """
         You are an award-winning poet with mastery over every poetic form. 
@@ -167,9 +164,6 @@ final class ChatService {
     // MARK: - Manual Generation Methods
     
     func generatePoem(topic: String, type: PoemType, temperature: Temperature) async throws -> RequestEnhanced {
-        // Cancel any active generation
-        activeGenerationTask?.cancel()
-        
         isGenerating = true
         lastError = nil
         generationStartTime = Date()
@@ -189,7 +183,8 @@ final class ChatService {
         let poemContent = try await generatePoem(
             type: type,
             topic: topic,
-            temperature: temperature
+            temperature: temperature,
+            config: self.config
         )
         
         // Save response (with CloudKit sync)
@@ -263,7 +258,8 @@ final class ChatService {
             poemContent = try await generatePoem(
                 type: poemType,
                 topic: topic,
-                temperature: temperature
+                temperature: temperature,
+                config: self.config
             )
         } catch {
             print("❌ Failed to generate poem in regeneratePoem")
@@ -274,12 +270,8 @@ final class ChatService {
         print("Generated content length: \(poemContent.count) characters")
         print("🎨 Generated poem content: \(poemContent.prefix(50))...")
         
-        // EXPERIMENT: Create new content string completely disconnected from async context
-        let newContent = String(poemContent.map { $0 })  // Force character-by-character copy
-        print("🔄 Created new content string: \(newContent.count) chars")
-        
         // Update the response with new content
-        existingResponse.content = newContent
+        existingResponse.content = poemContent
         existingResponse.lastModified = Date()
         existingResponse.syncStatus = .pending
         
@@ -321,14 +313,6 @@ final class ChatService {
     }
     
     // MARK: - Utility Methods
-    
-    func cancelGeneration() {
-        activeGenerationTask?.cancel()
-        activeGenerationTask = nil
-        isGenerating = false
-        
-        print("🛑 Generation cancelled")
-    }
     
     func clearError() {
         lastError = nil

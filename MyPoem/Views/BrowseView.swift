@@ -154,26 +154,39 @@ struct PoemTypeDetailView: View {
     }
     
     var body: some View {
-        MessageHistoryView(requests: requests)
-            .navigationTitle(poemType.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Text("\(requests.count) poems")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color(.tertiarySystemBackground))
-                        .clipShape(Capsule())
+        ZStack {
+            MessageHistoryView(requests: requests)
+                .navigationTitle(poemType.name)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Text("\(requests.count) poems")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color(.tertiarySystemBackground))
+                            .clipShape(Capsule())
+                    }
                 }
+                .padding(.bottom, 80)
+            
+            // Poem creation status overlay with minimalist styling
+            if appState.shouldShowCreationModal {
+                VStack {
+                    MinimalistCreationStatus()
+                        .padding(.top, 50)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(1)
             }
-            .padding(.bottom, 80)
-            .onAppear {
-                appState.setFilter(poemType)
-            }
-            .onDisappear {
-                appState.resetFilters()
-            }
+        }
+        .onAppear {
+            appState.setFilter(poemType)
+        }
+        .onDisappear {
+            appState.resetFilters()
+        }
     }
 }

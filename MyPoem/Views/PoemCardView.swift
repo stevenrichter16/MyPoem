@@ -315,33 +315,11 @@ struct PoemCardView: View {
     }
     
     private func regeneratePoem() {
-        isRegenerating = true
+        guard let topic = request.userTopic,
+              let poemType = request.poemType else { return }
         
-        // Add regeneration tracking
-        let regenerationId = UUID().uuidString.prefix(8)
-        print("🔄 [\(regenerationId)] Starting regeneration for request: \(request.id ?? "unknown")")
-        print("   Topic: \(request.userTopic ?? "none")")
-        print("   Type: \(request.poemType?.name ?? "none")")
-        
-        Task {
-            do {
-                print("🔄 [\(regenerationId)] Calling chatService.regeneratePoem...")
-                try await chatService.regeneratePoem(for: request)
-                print("✅ [\(regenerationId)] chatService.regeneratePoem completed successfully")
-                print("in PoemCardView AFTER chatService.regeneratePoem call")
-                
-                await MainActor.run {
-                    print("🏁 [\(regenerationId)] Resetting isRegenerating flag")
-                    isRegenerating = false
-                }
-            } catch {
-                print("❌ [\(regenerationId)] Regeneration failed: \(error)")
-                await MainActor.run {
-                    isRegenerating = false
-                    appState.showCloudKitError("Failed to regenerate poem: \(error.localizedDescription)")
-                }
-            }
-        }
+        // Simply use startPoemCreation like onSubmit and resendRequest do
+        appState.startPoemCreation(type: poemType, topic: topic)
     }
     
     private func copyToClipboard() {

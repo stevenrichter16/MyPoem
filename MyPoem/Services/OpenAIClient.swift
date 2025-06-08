@@ -8,6 +8,7 @@
 import Foundation
 
 /// A simple singleton wrapper around the OpenAI Chat Completions endpoint
+@MainActor
 final class OpenAIClient {
     static let shared = OpenAIClient()
 
@@ -52,16 +53,6 @@ final class OpenAIClient {
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
     // 2) Encode body
-    struct ChatMessage: Codable {
-      let role: String
-      let content: String
-    }
-    struct ChatRequest: Codable {
-      let model: String
-      let messages: [ChatMessage]
-      let temperature: Double
-    
-    }
     let body = ChatRequest(
         model: actualModel,
       messages: [
@@ -90,15 +81,6 @@ final class OpenAIClient {
     }
 
     // 4) Decode the first choice
-    struct Choice: Codable {
-      struct Delta: Codable {
-        let content: String?
-      }
-      let message: Delta
-    }
-    struct ChatResponse: Codable {
-      let choices: [Choice]
-    }
     let chat = try JSONDecoder().decode(ChatResponse.self, from: data)
     guard let first = chat.choices.first?.message.content else {
         if config.enableDebugLogging {

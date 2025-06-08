@@ -42,7 +42,9 @@ final class DataManager {
     }
     
     func requests(for poemType: PoemType) -> [RequestEnhanced] {
-        requests.filter { $0.poemType?.id == poemType.id }
+        requests
+            .filter { $0.poemType?.id == poemType.id }
+            .sorted { ($0.createdAt ?? Date.distantPast) > ($1.createdAt ?? Date.distantPast) }
     }
     
     func requestCount(for poemType: PoemType) -> Int {
@@ -62,6 +64,7 @@ final class DataManager {
         self.syncManager = syncManager
         
         Task {
+            print("in DataManager init")
             await loadData()
             await updateSyncCounts()
         }
@@ -78,7 +81,7 @@ final class DataManager {
         isLoading = true
         
         do {
-            // Fetch requests with sync status
+            // Fetch requests
             let requestDescriptor = FetchDescriptor<RequestEnhanced>(
                 sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
             )
@@ -327,6 +330,7 @@ final class DataManager {
     // MARK: - Cache Management
     
     private func rebuildCaches() {
+        print("in DataManager.RebuildCaches")
         requestCache.removeAll()
         responseCache.removeAll()
         
@@ -341,6 +345,11 @@ final class DataManager {
         for response in responses {
             if let requestId = response.requestId {
                 responseCache[requestId] = response
+                // eg:
+                // request.id = 25
+                // response.requestId = 25
+                // responseCache[25] = response
+                // then you can do: responseCache[request.id] -> response of the request
             }
         }
     }
@@ -465,6 +474,7 @@ enum DataError: LocalizedError {
 extension DataManager {
     // MARK: - Revision Management
     
+    // Revision method
     @MainActor
     func createRevision(for request: RequestEnhanced, content: String, changeNote: String? = nil, changeType: ChangeType = .manual) async throws -> PoemRevision {
         // Find the current revision to set as parent
@@ -509,6 +519,7 @@ extension DataManager {
         return newRevision
     }
     
+    // Revision method
     @MainActor
     func fetchRevisions(for request: RequestEnhanced) async throws -> [PoemRevision] {
         guard let requestId = request.id else { return [] }
@@ -523,6 +534,7 @@ extension DataManager {
         return try modelContext.fetch(descriptor)
     }
     
+    // Revision method
     @MainActor
     func restoreRevision(_ revision: PoemRevision, for request: RequestEnhanced) async throws {
         guard let content = revision.content else {
@@ -548,6 +560,7 @@ extension DataManager {
         print("✅ Restored revision #\(revision.revisionNumber ?? 0)")
     }
     
+    // Revision method
     @MainActor
     func updatePoemContent(for request: RequestEnhanced, newContent: String, changeNote: String? = nil) async throws {
         // Get current response
