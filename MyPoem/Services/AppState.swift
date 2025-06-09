@@ -39,6 +39,8 @@ final class AppState {
         let id = UUID()
         let type: PoemType
         let topic: String
+        let variationId: String?
+        let suggestions: String?
         var isCreating: Bool = true
         let startedAt = Date()
         
@@ -136,7 +138,7 @@ final class AppState {
     }
     
     // MARK: - Poem Creation Methods
-    func startPoemCreation(type: PoemType, topic: String) {
+    func startPoemCreation(type: PoemType, topic: String, variationId: String? = nil, suggestions: String? = nil) {
         print("in AppState.startPoemCreation")
         // Validate input
         let trimmedTopic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -145,14 +147,26 @@ final class AppState {
             return
         }
         
+        // Use provided variation or default
+        let selectedVariationId = variationId ?? type.defaultVariation.id
+        
+        // Trim suggestions
+        let trimmedSuggestions = suggestions?.trimmingCharacters(in: .whitespacesAndNewlines)
+        
         // Create new session
         poemCreation = PoemCreationInfo(
             type: type,
             topic: trimmedTopic,
+            variationId: selectedVariationId,
+            suggestions: trimmedSuggestions?.isEmpty == true ? nil : trimmedSuggestions,
             isCreating: true
         )
         
-        print("🎭 Started creating \(type.name) about '\(trimmedTopic)'")
+        let variationName = type.variation(withId: selectedVariationId).name
+        print("🎭 Started creating \(type.name) (\(variationName)) about '\(trimmedTopic)'")
+        if let suggestions = trimmedSuggestions, !suggestions.isEmpty {
+            print("💡 With suggestions: \(suggestions)")
+        }
     }
     
     func finishPoemCreation() {

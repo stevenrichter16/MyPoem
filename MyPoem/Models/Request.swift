@@ -10,6 +10,7 @@ final class RequestEnhanced: Identifiable {
     var poemTypeData: Data? // Store as Data for CloudKit compatibility
     var poemVariationId: String?
     var temperatureData: Data? // Store as Data
+    var userSuggestions: String? // User's custom instructions
     var createdAt: Date?
     
     // ID references
@@ -54,6 +55,7 @@ final class RequestEnhanced: Identifiable {
         poemType: PoemType? = nil,
         poemVariationId: String? = nil,
         temperature: Temperature? = nil,
+        userSuggestions: String? = nil,
         createdAt: Date? = Date(),
         isOriginal: Bool? = true,
         variationNote: String? = nil,
@@ -65,6 +67,7 @@ final class RequestEnhanced: Identifiable {
         self.poemType = poemType
         self.poemVariationId = poemVariationId
         self.temperature = temperature
+        self.userSuggestions = userSuggestions
         self.createdAt = createdAt
         self.isOriginal = isOriginal
         self.variationNote = variationNote

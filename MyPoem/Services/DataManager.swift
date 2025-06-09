@@ -156,12 +156,14 @@ final class DataManager {
     
     // MARK: - Data Operations with CloudKit
     
-    func createRequest(topic: String, poemType: PoemType, temperature: Temperature) async throws -> RequestEnhanced {
+    func createRequest(topic: String, poemType: PoemType, poemVariationId: String? = nil, temperature: Temperature, suggestions: String? = nil) async throws -> RequestEnhanced {
         let request = RequestEnhanced(
             userInput: topic,
             userTopic: topic,
             poemType: poemType,
-            temperature: temperature
+            poemVariationId: poemVariationId,
+            temperature: temperature,
+            userSuggestions: suggestions
         )
         
         // Mark for sync
