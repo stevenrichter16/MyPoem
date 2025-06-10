@@ -60,12 +60,13 @@ struct CreateView: View {
                 PoemComposerView(
                     selectedPoemType: $selectedPoemType,
                     selectedTemperature: $selectedTemperature,
-                    onSubmit: { topic, variationId, suggestions in
+                    onSubmit: { topic, variationId, suggestions, mood in
                         appState.startPoemCreation(
                             type: selectedPoemType,
                             topic: topic,
                             variationId: variationId,
-                            suggestions: suggestions
+                            suggestions: suggestions,
+                            mood: mood
                         )
                         showingComposer = false
                     }

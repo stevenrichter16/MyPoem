@@ -41,6 +41,7 @@ final class AppState {
         let topic: String
         let variationId: String?
         let suggestions: String?
+        let mood: Mood?
         var isCreating: Bool = true
         let startedAt = Date()
         
@@ -138,7 +139,7 @@ final class AppState {
     }
     
     // MARK: - Poem Creation Methods
-    func startPoemCreation(type: PoemType, topic: String, variationId: String? = nil, suggestions: String? = nil) {
+    func startPoemCreation(type: PoemType, topic: String, variationId: String? = nil, suggestions: String? = nil, mood: Mood? = nil) {
         print("in AppState.startPoemCreation")
         // Validate input
         let trimmedTopic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -159,6 +160,7 @@ final class AppState {
             topic: trimmedTopic,
             variationId: selectedVariationId,
             suggestions: trimmedSuggestions?.isEmpty == true ? nil : trimmedSuggestions,
+            mood: mood,
             isCreating: true
         )
         
@@ -166,6 +168,9 @@ final class AppState {
         print("🎭 Started creating \(type.name) (\(variationName)) about '\(trimmedTopic)'")
         if let suggestions = trimmedSuggestions, !suggestions.isEmpty {
             print("💡 With suggestions: \(suggestions)")
+        }
+        if let mood = mood {
+            print("🎨 With mood: \(mood.name)")
         }
     }
     

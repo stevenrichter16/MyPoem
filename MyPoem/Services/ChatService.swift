@@ -19,10 +19,6 @@ final class ChatService {
     private(set) var averageGenerationTime: TimeInterval = 0
     @ObservationIgnored private var generationCount: Int = 0
     
-    // MARK: - Recent Generation Memory
-    @ObservationIgnored private var recentGenerations: [(type: String, keyPhrases: [String], timestamp: Date)] = []
-    @ObservationIgnored private let maxRecentMemory = 10 // Keep last 10 generations
-    @ObservationIgnored private let memoryWindowHours: TimeInterval = 2.0 // Remember for 2 hours
     
     // MARK: - Initialization
     init(dataManager: DataManager, appState: AppState, configuration: AppConfiguration = DefaultConfiguration()) {
@@ -106,6 +102,7 @@ final class ChatService {
             variationId: creation.variationId,
             temperature: Temperature.all[0],
             suggestions: creation.suggestions,
+            mood: creation.mood,
             config: self.config
         )
         
@@ -131,49 +128,45 @@ final class ChatService {
         print("✅ Poem generation completed successfully")
     }
     
-    private nonisolated func generatePoem(type: PoemType, topic: String, variationId: String? = nil, temperature: Temperature, suggestions: String? = nil, config: AppConfiguration) async throws -> String {
+    private nonisolated func generatePoem(type: PoemType, topic: String, variationId: String? = nil, temperature: Temperature, suggestions: String? = nil, mood: Mood? = nil, config: AppConfiguration) async throws -> String {
         // Get the variation to use
         let variation = type.variation(withId: variationId)
         
-        // Build anti-AI instructions to avoid generic AI poetry
+        // Smarter anti-AI instructions based on actual patterns
         let antiAIInstructions = """
         
-        CRITICAL: Avoid these AI-generated poetry clichés at all costs:
-        - 'whispers of', 'echoes through', 'dance of light', 'tapestry of', 'symphony of', 'embrace of'
-        - Generic references to 'golden hues', 'emerald seas', 'azure skies', 'crimson sunsets'
-        - Abstract generalizations instead of concrete, specific details
-        - Forced rhymes or artificial-sounding meter
-        - Overly flowery or 'poetic' language that no real person would use
+        AVOID these common AI poetry patterns:
+        - Predictable emotional progressions (sad→hopeful, dark→light)
+        - Overused nature metaphors for emotions (storms for anger, sunshine for joy)
+        - Abstract concept + "of" + abstract concept ("tapestry of dreams", "symphony of souls")
+        - Ending with uplifting universal truths or life lessons
+        - Perfect resolution that ties everything up neatly
         
-        Instead:
-        - Write with authentic human voice and subtle imperfections
-        - Use specific, concrete imagery from real observation
-        - Let natural speech patterns guide the rhythm
-        - Include unexpected word choices that feel fresh
-        - Show don't tell - use precise details not abstract concepts
+        INSTEAD:
+        - End on an image, not an explanation
+        - Use specific, unexpected details (not "a bird" but "a crow missing two tail feathers")
+        - Let contradictions and complexity exist without resolution
+        - Trust the reader to find meaning without stating it
         """
         
-        // Get dynamic poet persona based on variation
-        let poetPersona = getPoetPersona(for: type, variation: variation)
-        
-        // Get rhythm guidance for the poem type
-        let rhythmGuidance = getRhythmGuidance(for: type)
+        // Get technical guidance for the poem form
+        let technicalGuidance = getPoetPersona(for: type, variation: variation)
         
         // Get concreteness cues to ground the imagery
         let concretenessCues = getConcretenessCues(for: topic)
         
-        // Get recent imagery to avoid repetition
-        let recentImageryWarning = await getRecentImageryWarning(for: type)
+        // Get mood guidance if specified
+        let moodGuidance = getMoodGuidance(for: mood)
         
-        // Build the system prompt with dynamic persona and guidance
+        // Build the system prompt - cleaner and more focused
         let systemPrompt = """
-        \(poetPersona)
+        You are a contemporary poet who values authentic expression and precise craft.
         
-        \(rhythmGuidance)
+        \(technicalGuidance)
+        
+        \(moodGuidance)
         
         \(concretenessCues)
-        
-        \(recentImageryWarning)
         
         \(antiAIInstructions)
         """
@@ -186,18 +179,8 @@ final class ChatService {
             userPrompt += "\n\nAdditional instructions from the user:\n\(suggestions)"
         }
         
-        // Apply proven temperature adjustments for specific poem types
-        let temperatureMultiplier: Double = {
-            switch type.id {
-            case "haiku": return 0.85      // Precision and constraint benefit from lower temp
-            case "sonnet": return 0.9       // Formal structure needs some control
-            case "limerick": return 1.1     // Wordplay and humor benefit from higher temp
-            case "freeverse": return 1.05   // Creative freedom benefits from slight increase
-            default: return 1.0             // Ode and ballad work well at base temperature
-            }
-        }()
-        
-        let adjustedTemperature = temperature.value * temperatureMultiplier
+        // Use the temperature as selected by the user
+        let adjustedTemperature = temperature.value
         
         // Call OpenAI (handling optional properties)
         print("About to call OpenAI...")
@@ -215,12 +198,6 @@ final class ChatService {
             print("After Returning from OpenAI Chat Completion - \(generatedContent.prefix(50))...")
             print("Thread after OpenAI: \(Thread.current)")
             print("About to return from generatePoem")
-            
-            // Track key phrases from this generation
-            await MainActor.run {
-                self.trackRecentGeneration(type: type, content: generatedContent)
-            }
-            
             return generatedContent
         } catch {
             print("❌ OpenAI call failed in generatePoem: \(error)")
@@ -252,6 +229,7 @@ final class ChatService {
             topic: topic,
             temperature: temperature,
             suggestions: nil,
+            mood: nil,
             config: self.config
         )
         
@@ -328,6 +306,7 @@ final class ChatService {
                 topic: topic,
                 temperature: temperature,
                 suggestions: request.userSuggestions,
+                mood: nil, // TODO: Store mood in request for regeneration
                 config: self.config
             )
         } catch {
@@ -370,97 +349,64 @@ final class ChatService {
     // MARK: - Prompt Building Helpers
     
     private nonisolated func getPoetPersona(for type: PoemType, variation: PoemTypeVariation) -> String {
-        // Create dynamic personas based on poem type and variation
+        // Minimal technical guidance focused on craft, not imposed voice
         switch type.id {
         case "haiku":
-            switch variation.id {
-            case "traditional":
-                return "You are a contemplative poet in the tradition of Basho and Issa, finding profound meaning in small moments. Your voice is quiet but penetrating, noticing what others overlook."
-            case "emotional":
-                return "You write with the sensitivity of someone who feels deeply but speaks sparingly. Your haikus capture emotional truths through precise, understated imagery."
-            case "modern":
-                return "You're a contemporary observer who finds poetry in urban life, technology, and modern experience. Your voice is fresh and current while honoring haiku's essence."
-            default:
-                return "You craft haikus with the precision of a jeweler, where every syllable matters and silence speaks as loudly as words."
-            }
+            return "Write a haiku in 5-7-5 syllables. Include a concrete image from nature or daily life. Create a subtle shift or juxtaposition between images (the 'cutting' effect). Avoid explaining or moralizing."
             
         case "freeverse":
-            switch variation.id {
-            case "flowing":
-                return "You write like someone thinking out loud, letting thoughts flow naturally onto the page. Your voice is conversational yet lyrical, like a friend sharing something important."
-            case "fragmented":
-                return "You're an experimental poet who uses white space and line breaks as instruments. Your voice fractures and reassembles meaning in surprising ways."
-            case "voice-driven":
-                return "You have a distinctive speaking voice that comes through in every line. You write like you talk - with personality, quirks, and authentic human rhythms."
-            default:
-                return "You're a contemporary free verse poet who values authentic expression over artificial beauty. Your voice is clear, direct, and emotionally honest."
+            if variation.id == "fragmented" {
+                return "Write in free verse using short, fragmented lines and strategic white space. Let gaps and silences carry meaning."
             }
+            return "Write in free verse. Use line breaks purposefully to control pacing and emphasis. Let the form follow the content's natural rhythm."
             
         case "sonnet":
             switch variation.id {
             case "shakespearean":
-                return "You write with the wit and wordplay of an Elizabethan poet updated for modern times. Your voice balances formal skill with emotional accessibility."
-            case "modern":
-                return "You're a contemporary sonneteer who respects tradition while breaking new ground. Your voice is both classical and current, formal yet intimate."
+                return "Write a 14-line Shakespearean sonnet in iambic pentameter (10 syllables per line, unstressed-stressed pattern). Follow ABAB CDCD EFEF GG rhyme scheme. Place the volta (turn) before the final couplet, which should reframe or resolve the poem."
+            case "petrarchan":
+                return "Write a 14-line Petrarchan sonnet. The octave (8 lines, ABBAABBA) presents a situation or question. The sestet (6 lines, CDECDE or CDCDCD) responds or resolves. Place the volta at line 9."
             default:
-                return "You craft sonnets with architectural precision, building arguments that resolve in surprising ways. Your voice combines intellectual rigor with emotional depth."
+                return "Write a 14-line sonnet with a clear structural turn (volta). Maintain consistent meter and include a strong resolution in the final lines."
             }
             
         case "limerick":
-            return "You're a playful wordsmith with a gift for rhythm and unexpected rhymes. Your voice is mischievous but clever, finding humor in language itself."
+            return "Write a limerick in anapestic meter (da-da-DUM). Lines 1, 2, and 5 have 3 beats; lines 3 and 4 have 2 beats. AABBA rhyme scheme. The final line should land with surprise or wit."
             
         case "ode":
-            switch variation.id {
-            case "personal":
-                return "You write odes like love letters to the world, with intimate knowledge and genuine affection. Your voice is warm, specific, and deeply appreciative."
-            case "playful":
-                return "You celebrate the ordinary with wit and wonder, finding profound joy in simple things. Your voice is enthusiastic but never naive."
-            default:
-                return "You're a poet of celebration who sees the extraordinary in everything. Your voice lifts subjects up without losing sight of their reality."
-            }
+            return "Write an ode using heightened language and specific sensory details. Build through accumulation of precise observations. Maintain genuine enthusiasm without empty superlatives."
             
         case "ballad":
-            return "You're a storyteller at heart, weaving narratives that feel both timeless and immediate. Your voice carries the weight of tradition while speaking to now."
+            return "Write a ballad in quatrains (4-line stanzas). Use ballad meter: alternating lines of 8 and 6 syllables (8-6-8-6). Focus on narrative action and dialogue. Include a refrain if appropriate."
             
         default:
-            return "You're a skilled contemporary poet who writes with authentic voice and fresh perspective, avoiding clichés and generic 'poetic' language."
+            return "Write with precision and authenticity. Focus on concrete imagery over abstract statements."
         }
     }
     
-    private nonisolated func getRhythmGuidance(for type: PoemType) -> String {
-        switch type.id {
-        case "haiku":
-            return """
-            RHYTHM: Follow the 5-7-5 syllable pattern naturally. Don't force words to fit - let the constraint guide you to more precise language. The rhythm should feel like breathing: inhale (5), pause (7), exhale (5).
-            """
-            
-        case "sonnet":
-            return """
-            RHYTHM: Write in iambic pentameter (da-DUM da-DUM da-DUM da-DUM da-DUM) but let it flow naturally. Don't force the meter - occasional variations keep it human. The rhythm should support meaning, not dominate it.
-            """
-            
-        case "limerick":
-            return """
-            RHYTHM: Keep the bouncy anapestic meter (da-da-DUM) that makes limericks fun to read aloud. Lines 1, 2, and 5 should have 3 beats; lines 3 and 4 have 2 beats. The rhythm should gallop playfully.
-            """
-            
-        case "ballad":
-            return """
-            RHYTHM: Use the traditional ballad meter (alternating lines of 8 and 6 syllables) but prioritize storytelling over strict counting. The rhythm should feel like a song someone would remember.
-            """
-            
-        case "freeverse":
-            return """
-            RHYTHM: Let the natural rhythm of speech guide your line breaks. Use enjambment and caesura to control pacing. Short lines create urgency; long lines create flow. Make rhythm serve emotion.
-            """
-            
-        case "ode":
-            return """
-            RHYTHM: Build momentum through repetition and parallel structures. Vary line lengths to create waves of enthusiasm. The rhythm should feel expansive and celebratory.
-            """
-            
+    
+    private nonisolated func getMoodGuidance(for mood: Mood?) -> String {
+        guard let mood = mood else {
+            return "" // No mood specified, no guidance needed
+        }
+        
+        switch mood.id {
+        case "joyful":
+            return "MOOD: Express genuine joy through specific, celebratory details. Avoid forced happiness - let joy emerge from precise observations."
+        case "melancholic":
+            return "MOOD: Capture quiet sadness through understated imagery. Avoid melodrama - let melancholy arise from careful, specific details."
+        case "playful":
+            return "MOOD: Use light, surprising language and unexpected connections. Keep playfulness natural, not forced or childish."
+        case "contemplative":
+            return "MOOD: Create space for thought through measured pacing and open-ended imagery. Avoid stating conclusions."
+        case "passionate":
+            return "MOOD: Express intensity through vivid, physical language. Let passion show in the urgency of images, not declarations."
+        case "mysterious":
+            return "MOOD: Use suggestive, atmospheric details that hint rather than explain. Create questions, not answers."
+        case "nostalgic":
+            return "MOOD: Evoke the past through specific sensory memories. Avoid sentimentality - let longing emerge from concrete details."
         default:
-            return "RHYTHM: Find the natural rhythm that serves your content. Don't force artificial patterns."
+            return ""
         }
     }
     
@@ -492,126 +438,6 @@ final class ChatService {
         return cues
     }
     
-    private nonisolated func getRecentImageryWarning(for type: PoemType) async -> String {
-        let recentPhrases = await MainActor.run {
-            self.getRecentPhrasesForType(type.id)
-        }
-        
-        guard !recentPhrases.isEmpty else {
-            return "" // No recent generations to worry about
-        }
-        
-        return """
-        VARIETY WARNING: Recent \(type.name) poems have used these images/phrases:
-        \(recentPhrases.joined(separator: ", "))
-        
-        Please avoid repeating these specific images and find fresh, unexpected alternatives.
-        """
-    }
-    
-    // MARK: - Recent Generation Tracking
-    
-    private func trackRecentGeneration(type: PoemType, content: String) {
-        // Extract key phrases and imagery from the generated content
-        let keyPhrases = extractKeyPhrases(from: content, poemType: type)
-        
-        // Add to recent generations
-        recentGenerations.append((
-            type: type.id,
-            keyPhrases: keyPhrases,
-            timestamp: Date()
-        ))
-        
-        // Clean up old entries
-        cleanupOldGenerations()
-    }
-    
-    private func extractKeyPhrases(from content: String, poemType: PoemType) -> [String] {
-        var phrases: [String] = []
-        let lines = content.components(separatedBy: .newlines)
-        
-        // Common patterns to extract based on poem type
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Skip empty lines
-            guard !trimmed.isEmpty else { continue }
-            
-            // For haikus, look for key imagery in each line
-            if poemType.id == "haiku" {
-                // Extract nouns and verb phrases that create imagery
-                if trimmed.contains("breath") || trimmed.contains("breathing") {
-                    phrases.append("breath/breathing imagery")
-                }
-                if trimmed.contains("candle") || trimmed.contains("flame") {
-                    phrases.append("candle/flame imagery")
-                }
-                if trimmed.contains("shadow") {
-                    phrases.append("shadow imagery")
-                }
-                if trimmed.contains("flicker") {
-                    phrases.append("flickering")
-                }
-                // Look for specific sensory details
-                let words = trimmed.lowercased().components(separatedBy: .whitespaces)
-                for word in words {
-                    if word.contains("soft") || word.contains("warm") || word.contains("cold") {
-                        phrases.append("\(word) sensation")
-                    }
-                }
-            } else {
-                // For longer poems, track repeated metaphors or phrases
-                if trimmed.count > 20 && trimmed.count < 50 {
-                    // Look for metaphorical phrases
-                    if trimmed.contains("like") || trimmed.contains("as") {
-                        phrases.append(trimmed)
-                    }
-                }
-            }
-        }
-        
-        // Remove duplicates and limit to most significant
-        return Array(Set(phrases)).prefix(5).map { $0 }
-    }
-    
-    private func getRecentPhrasesForType(_ typeId: String) -> [String] {
-        let cutoffTime = Date().addingTimeInterval(-memoryWindowHours * 3600)
-        
-        // Filter for recent generations of the same type
-        let recentOfType = recentGenerations.filter { generation in
-            generation.type == typeId && generation.timestamp > cutoffTime
-        }
-        
-        // Collect all key phrases
-        var allPhrases: [String] = []
-        for generation in recentOfType {
-            allPhrases.append(contentsOf: generation.keyPhrases)
-        }
-        
-        // Count occurrences and return most common
-        let phraseCounts = allPhrases.reduce(into: [:]) { counts, phrase in
-            counts[phrase, default: 0] += 1
-        }
-        
-        // Return phrases that appear more than once, sorted by frequency
-        return phraseCounts
-            .filter { $0.value > 1 }
-            .sorted { $0.value > $1.value }
-            .prefix(5)
-            .map { $0.key }
-    }
-    
-    private func cleanupOldGenerations() {
-        let cutoffTime = Date().addingTimeInterval(-memoryWindowHours * 3600)
-        
-        // Remove old entries beyond the time window
-        recentGenerations.removeAll { $0.timestamp < cutoffTime }
-        
-        // Keep only the most recent if we exceed max memory
-        if recentGenerations.count > maxRecentMemory {
-            recentGenerations = Array(recentGenerations.suffix(maxRecentMemory))
-        }
-    }
     
     // MARK: - Metrics
     

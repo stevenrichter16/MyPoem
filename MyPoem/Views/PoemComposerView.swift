@@ -5,12 +5,14 @@ struct PoemComposerView: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedPoemType: PoemType
     @Binding var selectedTemperature: Temperature
-    var onSubmit: (String, String?, String?) -> Void // Updated to include variationId and suggestions
+    var onSubmit: (String, String?, String?, Mood?) -> Void // Updated to include variationId, suggestions, and mood
     
     @State private var topicInput: String = ""
     @State private var selectedVariationId: String? = nil
     @State private var suggestionsInput: String = ""
     @State private var showSuggestions: Bool = false
+    @State private var selectedMood: Mood? = nil
+    @State private var showMoodSelector: Bool = false
     @FocusState private var isTextFieldFocused: Bool
     @FocusState private var isSuggestionsFocused: Bool
     
@@ -39,7 +41,7 @@ struct PoemComposerView: View {
                     
                     Button("Create") {
                         let suggestions = suggestionsInput.isEmpty ? nil : suggestionsInput
-                        onSubmit(topicInput, selectedVariationId, suggestions)
+                        onSubmit(topicInput, selectedVariationId, suggestions, selectedMood)
                     }
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(isValidInput ? Color(hex: "1A1A1A") : Color(hex: "999999"))
@@ -133,6 +135,87 @@ struct PoemComposerView: View {
                                                 }
                                             }
                                         )
+                                }
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        }
+                        
+                        // Mood Selection (Optional)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Button(action: {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showMoodSelector.toggle()
+                                }
+                            }) {
+                                HStack {
+                                    Text("MOOD (OPTIONAL)")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(Color(hex: "666666"))
+                                        .kerning(0.5)
+                                    
+                                    Spacer()
+                                    
+                                    if let mood = selectedMood {
+                                        Text(mood.name)
+                                            .font(.system(size: 12))
+                                            .foregroundColor(Color(hex: "1A1A1A"))
+                                    }
+                                    
+                                    Image(systemName: showMoodSelector ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(Color(hex: "666666"))
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            if showMoodSelector {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Set the emotional tone of your poem")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(Color(hex: "999999"))
+                                    
+                                    LazyVGrid(columns: [
+                                        GridItem(.flexible()),
+                                        GridItem(.flexible())
+                                    ], spacing: 8) {
+                                        // No mood option
+                                        Button(action: { selectedMood = nil }) {
+                                            HStack(spacing: 6) {
+                                                Image(systemName: "xmark.circle")
+                                                    .font(.system(size: 14))
+                                                Text("None")
+                                                    .font(.system(size: 14))
+                                            }
+                                            .foregroundColor(selectedMood == nil ? .white : Color(hex: "666666"))
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 10)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .fill(selectedMood == nil ? Color(hex: "1A1A1A") : Color(hex: "F5F5F5"))
+                                            )
+                                        }
+                                        .buttonStyle(PlainButtonStyle())
+                                        
+                                        // Mood options
+                                        ForEach(Mood.all) { mood in
+                                            Button(action: { selectedMood = mood }) {
+                                                HStack(spacing: 6) {
+                                                    Image(systemName: mood.icon)
+                                                        .font(.system(size: 14))
+                                                    Text(mood.name)
+                                                        .font(.system(size: 14))
+                                                }
+                                                .foregroundColor(selectedMood?.id == mood.id ? .white : Color(hex: "666666"))
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 10)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 6)
+                                                        .fill(selectedMood?.id == mood.id ? Color(hex: "1A1A1A") : Color(hex: "F5F5F5"))
+                                                )
+                                            }
+                                            .buttonStyle(PlainButtonStyle())
+                                        }
+                                    }
                                 }
                                 .transition(.opacity.combined(with: .move(edge: .top)))
                             }
