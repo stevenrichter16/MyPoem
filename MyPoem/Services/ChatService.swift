@@ -119,6 +119,19 @@ final class ChatService {
         
         try await dataManager.saveResponse(response)
         
+        // Create initial revision
+        do {
+            try await dataManager.createRevision(
+                for: request,
+                content: poemContent,
+                changeNote: "Initial poem generation",
+                changeType: .initial
+            )
+            print("📝 Created initial revision")
+        } catch {
+            print("⚠️ Failed to create initial revision: \(error)")
+        }
+        
         // Update generation metrics
         updateGenerationMetrics()
         
@@ -265,8 +278,6 @@ final class ChatService {
             throw ChatServiceError.invalidRequest("Missing required data for regeneration")
         }
         
-        // DISABLED: Revision creation for debugging
-        /*
         // Create a revision of the current content before regenerating
         if let existingResponse = dataManager.response(for: request),
            let currentContent = existingResponse.content,
@@ -285,7 +296,6 @@ final class ChatService {
                 // Continue with regeneration even if revision fails
             }
         }
-        */
         
         print("in ChatService.regeneratePoem right before calling ChatService.generatePoem()")
         
@@ -327,8 +337,6 @@ final class ChatService {
         try await dataManager.updateResponse(existingResponse)
         print("✅ updateResponse completed")
             
-            // DISABLED: Revision creation for debugging
-            /*
             // Create a revision for the new regenerated content
             do {
                 try await dataManager.createRevision(
@@ -341,7 +349,6 @@ final class ChatService {
             } catch {
                 print("⚠️ Failed to create revision for new content: \(error)")
             }
-            */
         
         print("✅ Poem regenerated for request: \(request.id ?? "unknown")")
     }

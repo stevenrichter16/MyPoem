@@ -11,6 +11,7 @@ final class DataManager {
     private(set) var requests: [RequestEnhanced] = []
     private(set) var responses: [ResponseEnhanced] = []
     private(set) var poemGroups: [PoemGroup] = []
+    // Revisions and notes loaded on-demand, not stored globally
     
     // MARK: - CloudKit Sync Status
     private(set) var unsyncedRequestsCount: Int = 0
@@ -536,6 +537,20 @@ extension DataManager {
         return try modelContext.fetch(descriptor)
     }
     
+    // Get revision count without loading all revisions
+    @MainActor
+    func getRevisionCount(for request: RequestEnhanced) async throws -> Int {
+        guard let requestId = request.id else { return 0 }
+        
+        let descriptor = FetchDescriptor<PoemRevision>(
+            predicate: #Predicate { revision in
+                revision.requestId == requestId
+            }
+        )
+        
+        return try modelContext.fetchCount(descriptor)
+    }
+    
     // Revision method
     @MainActor
     func restoreRevision(_ revision: PoemRevision, for request: RequestEnhanced) async throws {
@@ -570,23 +585,13 @@ extension DataManager {
             throw DataError.responseNotFound("No response found for request")
         }
         
-        // Create revision of current content
-        if let currentContent = response.content {
-            try await createRevision(
-                for: request,
-                content: currentContent,
-                changeNote: "Before manual edit",
-                changeType: .manual
-            )
-        }
-        
         // Update response with new content
         response.content = newContent
         response.lastModified = Date()
         response.syncStatus = .pending
-        //try await updateResponse(response)
+        try await updateResponse(response)
         
-        // Create revision for new content
+        // Create revision for the new content
         try await createRevision(
             for: request,
             content: newContent,
@@ -614,5 +619,130 @@ extension DataManager {
         revision.linesAdded = added
         revision.linesRemoved = removed
         revision.linesModified = modified
+    }
+    
+    // MARK: - Audio Notes Management
+    
+    @MainActor
+    func createAudioNote(for response: ResponseEnhanced, audioFileName: String, duration: TimeInterval) async throws -> AudioNote {
+        guard let responseId = response.id else {
+            throw DataError.invalidInput("Response has no ID")
+        }
+        
+        let audioNote = AudioNote(
+            responseId: responseId,
+            audioFileName: audioFileName,
+            duration: duration
+        )
+        
+        modelContext.insert(audioNote)
+        try modelContext.save()
+        
+        print("✅ Created audio note for response")
+        
+        return audioNote
+    }
+    
+    @MainActor
+    func fetchAudioNote(for response: ResponseEnhanced) async throws -> AudioNote? {
+        guard let responseId = response.id else { return nil }
+        
+        let descriptor = FetchDescriptor<AudioNote>(
+            predicate: #Predicate { note in
+                note.responseId == responseId
+            }
+        )
+        
+        return try modelContext.fetch(descriptor).first
+    }
+    
+    @MainActor
+    func deleteAudioNote(_ audioNote: AudioNote) async throws {
+        // Delete the audio file
+        if let url = audioNote.audioFileURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        
+        // Delete the model
+        modelContext.delete(audioNote)
+        try modelContext.save()
+        
+        print("✅ Deleted audio note")
+    }
+    
+    // MARK: - Poem Notes Management
+    
+    @MainActor
+    func createNote(for response: ResponseEnhanced, lineNumber: Int? = nil, lineContent: String? = nil, noteContent: String, colorHex: String? = nil) async throws -> PoemNote {
+        guard let responseId = response.id else {
+            throw DataError.invalidInput("Response has no ID")
+        }
+        
+        let note = PoemNote(
+            responseId: responseId,
+            lineNumber: lineNumber,
+            lineContent: lineContent,
+            noteContent: noteContent,
+            colorHex: colorHex
+        )
+        
+        modelContext.insert(note)
+        try modelContext.save()
+        
+        print("✅ Created note for \(lineNumber != nil ? "line \(lineNumber!)" : "overall poem")")
+        
+        return note
+    }
+    
+    @MainActor
+    func fetchNotes(for response: ResponseEnhanced) async throws -> [PoemNote] {
+        guard let responseId = response.id else { return [] }
+        
+        let descriptor = FetchDescriptor<PoemNote>(
+            predicate: #Predicate { note in
+                note.responseId == responseId
+            },
+            sortBy: [SortDescriptor(\.lineNumber), SortDescriptor(\.createdAt)]
+        )
+        
+        return try modelContext.fetch(descriptor)
+    }
+    
+    @MainActor
+    func updateNote(_ note: PoemNote, content: String) async throws {
+        note.noteContent = content
+        note.modifiedAt = Date()
+        note.lastModified = Date()
+        note.syncStatus = .pending
+        
+        try modelContext.save()
+        
+        print("✅ Updated note")
+    }
+    
+    @MainActor
+    func deleteNote(_ note: PoemNote) async throws {
+        modelContext.delete(note)
+        try modelContext.save()
+        
+        print("✅ Deleted note")
+    }
+    
+    @MainActor
+    func hasNotes(for response: ResponseEnhanced) async -> Bool {
+        guard let responseId = response.id else { return false }
+        
+        let descriptor = FetchDescriptor<PoemNote>(
+            predicate: #Predicate { note in
+                note.responseId == responseId
+            }
+        )
+        
+        do {
+            let count = try modelContext.fetchCount(descriptor)
+            return count > 0
+        } catch {
+            return false
+        }
     }
 }

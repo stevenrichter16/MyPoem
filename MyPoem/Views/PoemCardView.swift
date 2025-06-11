@@ -13,6 +13,7 @@ struct PoemCardView: View {
     @State private var showingRevisionHistory = false
     @State private var showingShareSheet = false
     @State private var showingMoreMenu = false
+    @State private var showingPoemDetail = false
     @State private var isRegenerating = false
     @State private var isDeleting = false
     @State private var isResponseExpanded: Bool = false
@@ -34,9 +35,17 @@ struct PoemCardView: View {
         request.poemType
     }
     
-    private var revisionCount: Int {
-        // TODO: Get actual revision count from DataManager
-        3 // Placeholder
+    @State private var revisionCount: Int = 0
+    
+    private func loadRevisionCount() async {
+        do {
+            let count = try await dataManager.getRevisionCount(for: request)
+            await MainActor.run {
+                self.revisionCount = count
+            }
+        } catch {
+            print("Failed to load revision count: \(error)")
+        }
     }
     
     // MARK: - Body
@@ -66,6 +75,17 @@ struct PoemCardView: View {
                                 .foregroundColor(Color(hex: "34C759"))
                         }
                     }
+                    
+                    // Small ellipsis menu in top right
+                    Button(action: { showingMoreMenu = true }) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(Color(hex: "#999999"))
+                            .frame(width: 24, height: 24)
+                            .background(Color(hex: "#F0F0F0"))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.bottom, 12)
                 
@@ -168,10 +188,10 @@ struct PoemCardView: View {
                         )
                         .disabled(chatService.isGenerating)
                         
-                        // More menu
+                        // View details button
                         CircularActionButton(
-                            icon: "ellipsis",
-                            action: { showingMoreMenu = true }
+                            icon: "eye",
+                            action: { showingPoemDetail = true }
                         )
                     }
                 }
@@ -196,10 +216,6 @@ struct PoemCardView: View {
         .opacity(isDeleting ? 0.5 : 1.0)
         .scaleEffect(isDeleting ? 0.95 : 1.0)
         .confirmationDialog("More Actions", isPresented: $showingMoreMenu) {
-            Button("View Revision History") {
-                showingRevisionHistory = true
-            }
-            
             Button("Share Poem") {
                 showingShareSheet = true
             }
@@ -221,6 +237,14 @@ struct PoemCardView: View {
             if let content = response?.content, let topic = request.userInput {
                 ShareSheet(items: [formatPoemForSharing(content: content, topic: topic, type: poemType)])
             }
+        }
+        .sheet(isPresented: $showingPoemDetail) {
+            if let response = response {
+                PoemDetailView(request: request, response: response)
+            }
+        }
+        .task {
+            await loadRevisionCount()
         }
     }
     

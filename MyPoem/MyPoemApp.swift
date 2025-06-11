@@ -24,7 +24,9 @@ struct MyPoemApp: App {
                 RequestEnhanced.self,
                 ResponseEnhanced.self,
                 PoemGroup.self,
-                PoemRevision.self // Add this
+                PoemRevision.self,
+                PoemNote.self,
+                AudioNote.self
             ])
             
             let modelConfiguration = ModelConfiguration(
@@ -175,10 +177,26 @@ struct MyPoemApp: App {
                 context.delete(revision)
             }
             
+            // Delete all notes
+            let notes = try context.fetch(FetchDescriptor<PoemNote>())
+            for note in notes {
+                context.delete(note)
+            }
+            
+            // Delete all audio notes
+            let audioNotes = try context.fetch(FetchDescriptor<AudioNote>())
+            for audioNote in audioNotes {
+                // Delete audio file
+                if let url = audioNote.audioFileURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                context.delete(audioNote)
+            }
+            
             // Save the deletions
             try context.save()
             
-            print("✅ Cleared all data: \(responses.count) responses, \(requests.count) requests, \(groups.count) groups, \(revisions.count) revisions")
+            print("✅ Cleared all data: \(responses.count) responses, \(requests.count) requests, \(groups.count) groups, \(revisions.count) revisions, \(notes.count) notes, \(audioNotes.count) audio notes")
             
             // Also clear the migration flag
             UserDefaults.standard.set(false, forKey: "HasPerformedCloudKitMigration")
