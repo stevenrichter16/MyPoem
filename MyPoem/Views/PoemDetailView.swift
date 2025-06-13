@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import SwiftData
+import Speech
 
 struct PoemDetailView: View {
     @Environment(\.dismiss) var dismiss
@@ -19,18 +20,32 @@ struct PoemDetailView: View {
     @State private var selectedColorHex = "#F5F5F5"
     @State private var isLoadingNotes = false
     @State private var showingRevisionHistory = false
+    @State private var showAllOverallNotes = false
+    @State private var editingOverallNote: PoemNote? = nil
+    @State private var noteToDelete: PoemNote? = nil
+    @State private var showingDeleteConfirmation = false
+    @State private var previewingNote: PoemNote? = nil
+    @State private var pressingNoteId: String? = nil
     
-    // Audio recording states
-    @State private var audioRecorder: AVAudioRecorder?
-    @State private var audioPlayer: AVAudioPlayer?
-    @State private var isRecording = false
-    @State private var isPlaying = false
-    @State private var audioNoteURL: URL?
-    @State private var recordingTime: TimeInterval = 0
-    @State private var recordingTimer: Timer?
-    @State private var playbackProgress: Double = 0
-    @State private var playbackTimer: Timer?
-    @State private var isDraggingScrubber = false
+    // Audio components
+    @State private var audioRecorder: PoemAudioRecorder?
+    @State private var audioPlayer: PoemAudioPlayer?
+    @State private var speechTranscriber: PoemSpeechTranscriber?
+    
+    // Computed properties for overall notes
+    private var overallNotes: [PoemNote] {
+        poemNotes
+            .filter { $0.lineNumber == nil }
+            .sorted { ($0.modifiedAt ?? $0.createdAt ?? Date()) > ($1.modifiedAt ?? $1.createdAt ?? Date()) }
+    }
+    
+    private var displayedOverallNotes: [PoemNote] {
+        showAllOverallNotes ? overallNotes : Array(overallNotes.prefix(3))
+    }
+    
+    private var canAddMoreOverallNotes: Bool {
+        overallNotes.count < 10
+    }
     
     var body: some View {
         NavigationView {
@@ -60,12 +75,52 @@ struct PoemDetailView: View {
             await loadNotes()
             await loadAudioNote()
         }
+        .onAppear {
+            setupAudioComponents()
+        }
+        .onDisappear {
+            audioPlayer?.cleanup()
+            audioRecorder?.cleanup()
+            pressingNoteId = nil
+        }
         .sheet(isPresented: $showingNoteEditor) {
             noteEditorSheet
         }
         .sheet(isPresented: $showingRevisionHistory) {
             PoemRevisionTimelineView(request: request)
         }
+        .alert("Delete Note", isPresented: $showingDeleteConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                if let noteToDelete = noteToDelete {
+                    Task {
+                        await deleteNote(noteToDelete)
+                    }
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete this note? This action cannot be undone.")
+        }
+        .overlay(
+            notePreviewOverlay
+        )
+    }
+    
+    // MARK: - Setup Functions
+    
+    private func setupAudioComponents() {
+        audioRecorder = PoemAudioRecorder(
+            response: response,
+            dataManager: dataManager
+        ) { url, audioNote in
+            // Start transcription after recording
+            Task { @MainActor [weak speechTranscriber] in
+                await speechTranscriber?.transcribeAudio(from: url, for: audioNote)
+            }
+        }
+        
+        audioPlayer = PoemAudioPlayer()
+        speechTranscriber = PoemSpeechTranscriber(dataManager: dataManager)
     }
     
     private var customNavigationBar: some View {
@@ -154,101 +209,7 @@ struct PoemDetailView: View {
         
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                HStack(alignment: .top, spacing: 16) {
-                    HStack(spacing: 2) {
-                        // Color dot indicator
-                        if let note = noteForLine(lineNumber: index) {
-                            Circle()
-                                .fill(Color(hex: note.colorHex ?? "#F5F5F5"))
-                                .frame(width: 6, height: 6)
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color(hex: "#E0E0E0"), lineWidth: 0.5)
-                                )
-                        }
-                        
-                        Text("\(index + 1)")
-                            .font(.custom("Georgia", size: 16))
-                            .foregroundColor(selectedLineIndex == index ? Color(hex: "#007AFF") : Color(hex: "#999999"))
-                    }
-                    .frame(minWidth: 28, alignment: .trailing)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(line)
-                                .font(.custom("Georgia", size: 18))
-                                .foregroundColor(Color(hex: "#1A1A1A"))
-                                .lineSpacing(4)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            
-                            // Note indicator
-                            if lineHasNote(lineNumber: index) {
-                                Image(systemName: "note.text")
-                                    .font(.caption)
-                                    .foregroundColor(Color(hex: "#666666"))
-                            }
-                        }
-                        
-                        // Show existing note if any
-                        if let note = noteForLine(lineNumber: index) {
-                            Text(note.noteContent ?? "")
-                                .font(.caption)
-                                .foregroundColor(Color(hex: "#333333"))
-                                .italic()
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color(hex: note.colorHex ?? "#F5F5F5"))
-                                .cornerRadius(4)
-                        }
-                        
-                        // Show action buttons only for selected line
-                        if selectedLineIndex == index && showingLineActions {
-                            HStack(spacing: 12) {
-                                Button(action: {
-                                    editingNoteForLine = index
-                                    let existingNote = noteForLine(lineNumber: index)
-                                    noteContent = existingNote?.noteContent ?? ""
-                                    selectedColorHex = existingNote?.colorHex ?? "#F5F5F5"
-                                    showingNoteEditor = true
-                                }) {
-                                    Label(lineHasNote(lineNumber: index) ? "Edit Note" : "Add Note", 
-                                          systemImage: lineHasNote(lineNumber: index) ? "note.text" : "note.text.badge.plus")
-                                        .font(.caption)
-                                        .foregroundColor(Color(hex: "#007AFF"))
-                                }
-                                .buttonStyle(BorderlessButtonStyle())
-                                // Disabled Get Suggestion button
-//                                Button(action: {
-//                                    // Future: AI suggestions
-//                                }) {
-//                                    Label("Get Suggestions", systemImage: "sparkles")
-//                                        .font(.caption)
-//                                        .foregroundColor(Color(hex: "#9C27B0"))
-//                                }
-//                                .buttonStyle(BorderlessButtonStyle())
-                            }
-                            .padding(.top, 4)
-                            .transition(.scale.combined(with: .opacity))
-                        }
-                    }
-                }
-                .padding(.vertical, 8)
-                .padding(.horizontal, 2)
-                .padding(.trailing, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(selectedLineIndex == index ? Color(hex: "#007AFF").opacity(0.05) : Color.clear)
-                )
-                .onTapGesture {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        if selectedLineIndex == index {
-                            showingLineActions.toggle()
-                        } else {
-                            selectedLineIndex = index
-                            showingLineActions = true
-                        }
-                    }
-                }
+                poemLineRow(index: index, line: line)
             }
         }
         .padding(.vertical, 8)
@@ -259,6 +220,7 @@ struct PoemDetailView: View {
             // Tap outside to deselect
             if selectedLineIndex != nil {
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    print("in poemContentWithLineNumbers")
                     selectedLineIndex = nil
                     showingLineActions = false
                 }
@@ -266,60 +228,165 @@ struct PoemDetailView: View {
         }
     }
     
+    @ViewBuilder
+    private func poemLineRow(index: Int, line: String) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            lineNumberView(index: index)
+            lineContentView(index: index, line: line)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 2)
+        .padding(.trailing, 8)
+        .background(lineBackground(index: index))
+        .onTapGesture {
+            handleLineTap(index: index)
+        }
+    }
+    
+    @ViewBuilder
+    private func lineNumberView(index: Int) -> some View {
+        HStack(spacing: 2) {
+            // Color dot indicator
+            if let note = noteForLine(lineNumber: index, in: poemNotes) {
+                Circle()
+                    .fill(Color(hex: note.colorHex ?? "#F5F5F5"))
+                    .frame(width: 6, height: 6)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(hex: "#E0E0E0"), lineWidth: 0.5)
+                    )
+            }
+            
+            Text("\(index + 1)")
+                .font(.custom("Georgia", size: 16))
+                .foregroundColor(selectedLineIndex == index ? Color(hex: "#007AFF") : Color(hex: "#999999"))
+        }
+        .frame(minWidth: 28, alignment: .trailing)
+    }
+    
+    @ViewBuilder
+    private func lineContentView(index: Int, line: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Text(line)
+                    .font(.custom("Georgia", size: 18))
+                    .foregroundColor(Color(hex: "#1A1A1A"))
+                    .lineSpacing(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                // Note indicator
+                if lineHasNote(lineNumber: index, in: poemNotes) {
+                    Image(systemName: "note.text")
+                        .font(.caption)
+                        .foregroundColor(Color(hex: "#666666"))
+                }
+            }
+            
+            // Show existing note if any
+            if let note = noteForLine(lineNumber: index, in: poemNotes) {
+                noteView(note: note)
+            }
+            
+            // Show action buttons only for selected line
+            if selectedLineIndex == index && showingLineActions {
+                lineActionButtons(index: index)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func noteView(note: PoemNote) -> some View {
+        Text(note.noteContent ?? "")
+            .font(.caption)
+            .foregroundColor(Color(hex: "#333333"))
+            .italic()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color(hex: note.colorHex ?? "#F5F5F5"))
+            .cornerRadius(4)
+    }
+    
+    @ViewBuilder
+    private func lineActionButtons(index: Int) -> some View {
+        HStack(spacing: 12) {
+            Button(action: {
+                editingNoteForLine = index
+                let existingNote = noteForLine(lineNumber: index, in: poemNotes)
+                noteContent = existingNote?.noteContent ?? ""
+                selectedColorHex = existingNote?.colorHex ?? "#F5F5F5"
+                showingNoteEditor = true
+            }) {
+                Label(lineHasNote(lineNumber: index, in: poemNotes) ? "Edit Note" : "Add Note",
+                      systemImage: lineHasNote(lineNumber: index, in: poemNotes) ? "note.text" : "note.text.badge.plus")
+                    .font(.caption)
+                    .foregroundColor(Color(hex: "#007AFF"))
+            }
+            .buttonStyle(BorderlessButtonStyle())
+        }
+        .padding(.top, 4)
+        .transition(.scale.combined(with: .opacity))
+    }
+    
+    private func lineBackground(index: Int) -> some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(selectedLineIndex == index ? Color(hex: "#007AFF").opacity(0.05) : Color.clear)
+    }
+    
+    private func handleLineTap(index: Int) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if selectedLineIndex == index {
+                showingLineActions.toggle()
+            } else {
+                selectedLineIndex = index
+                showingLineActions = true
+            }
+        }
+    }
+    
     private var notesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Header with count
             HStack {
                 Text("Overall Notes")
                     .font(.headline)
                     .foregroundColor(Color(hex: "#1A1A1A"))
                 
+                if !overallNotes.isEmpty {
+                    Text("(\(overallNotes.count)/10)")
+                        .font(.subheadline)
+                        .foregroundColor(Color(hex: "#666666"))
+                }
+                
                 Spacer()
                 
-                Button(action: {
-                    editingNoteForLine = nil // nil indicates overall poem note
-                    let existingNote = poemNotes.first { $0.lineNumber == nil }
-                    noteContent = existingNote?.noteContent ?? ""
-                    selectedColorHex = existingNote?.colorHex ?? "#F5F5F5"
-                    showingNoteEditor = true
-                }) {
-                    Image(systemName: overallPoemHasNote() ? "square.and.pencil" : "plus.circle.fill")
-                        .font(.system(size: 18))
+                // Add button only if under limit
+                if canAddMoreOverallNotes {
+                    Button(action: {
+                        editingNoteForLine = nil // nil indicates overall poem note
+                        editingOverallNote = nil // Creating new note
+                        noteContent = ""
+                        selectedColorHex = "#F5F5F5"
+                        showingNoteEditor = true
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 18))
+                            if overallNotes.count >= 8 {
+                                Text("(\(10 - overallNotes.count) left)")
+                                    .font(.caption)
+                            }
+                        }
                         .foregroundColor(Color(hex: "#007AFF"))
+                    }
+                } else {
+                    Text("Limit reached")
+                        .font(.caption)
+                        .foregroundColor(Color(hex: "#999999"))
                 }
             }
             
-            // Display overall poem note (single note)
-            if let overallNote = poemNotes.first(where: { $0.lineNumber == nil }) {
-                VStack(alignment: .leading, spacing: 8) {
-                    // Use markdown rendering for overall notes
-                    Text(renderMarkdown(overallNote.noteContent ?? ""))
-                        .font(.body)
-                        .foregroundColor(Color(hex: "#333333"))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    HStack {
-                        Text(formatDate(overallNote.modifiedAt ?? overallNote.createdAt ?? Date()))
-                            .font(.caption2)
-                            .foregroundColor(Color(hex: "#999999"))
-                        
-                        Spacer()
-                        
-                        Button(action: {
-                            editingNoteForLine = nil
-                            noteContent = overallNote.noteContent ?? ""
-                            selectedColorHex = overallNote.colorHex ?? "#F5F5F5"
-                            showingNoteEditor = true
-                        }) {
-                            Text("Edit")
-                                .font(.caption)
-                                .foregroundColor(Color(hex: "#007AFF"))
-                        }
-                    }
-                }
-                .padding(12)
-                .background(Color(hex: overallNote.colorHex ?? "#F5F5F5"))
-                .cornerRadius(8)
-            } else {
+            // Display notes or empty state
+            if overallNotes.isEmpty {
                 Text("Add notes about the overall poem, themes, or revision plans")
                     .font(.caption)
                     .foregroundColor(Color(hex: "#999999"))
@@ -329,9 +396,158 @@ struct PoemDetailView: View {
                     .padding(.horizontal, 16)
                     .background(Color(hex: "#F5F5F5"))
                     .cornerRadius(8)
+            } else {
+                VStack(spacing: 12) {
+                    // Display notes
+                    ForEach(displayedOverallNotes) { note in
+                        overallNoteCard(for: note)
+                    }
+                    
+                    // Show more/less button
+                    if overallNotes.count > 3 {
+                        Button(action: {
+                            showAllOverallNotes.toggle()
+                        }) {
+                            HStack {
+                                Text(showAllOverallNotes ? "Show less" : "Show \(overallNotes.count - 3) more note\(overallNotes.count - 3 == 1 ? "" : "s")")
+                                    .font(.subheadline)
+                                Image(systemName: showAllOverallNotes ? "chevron.up" : "chevron.down")
+                                    .font(.caption)
+                            }
+                            .foregroundColor(Color(hex: "#007AFF"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+                    }
+                }
             }
         }
         .padding(.top, 20)
+    }
+    
+    // MARK: - Note Preview Overlay
+    
+    @ViewBuilder
+    private var notePreviewOverlay: some View {
+        if previewingNote != nil {
+            Color.black.opacity(0.3)
+                .ignoresSafeArea()
+                .transition(.opacity)
+                .onTapGesture {
+                    dismissPreview()
+                }
+                .overlay(
+                    Group {
+                        if let note = previewingNote {
+                            NotePreviewCard(
+                                note: note,
+                                onEdit: {
+                                    dismissPreview()
+                                    editingNoteForLine = nil
+                                    editingOverallNote = note
+                                    noteContent = note.noteContent ?? ""
+                                    selectedColorHex = note.colorHex ?? "#F5F5F5"
+                                    showingNoteEditor = true
+                                },
+                                onCopy: {
+                                    UIPasteboard.general.string = note.noteContent
+                                    dismissPreview()
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                },
+                                onDelete: {
+                                    dismissPreview()
+                                    noteToDelete = note
+                                    showingDeleteConfirmation = true
+                                },
+                                onDismiss: dismissPreview
+                            )
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.9, anchor: .center).combined(with: .opacity),
+                                removal: .scale(scale: 0.95, anchor: .center).combined(with: .opacity)
+                            ))
+                        }
+                    }
+                )
+                .animation(.easeOut(duration: 0.1), value: previewingNote)
+        }
+    }
+    
+    private func dismissPreview() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            previewingNote = nil
+        }
+        pressingNoteId = nil
+    }
+    
+    // MARK: - Overall Note Card
+    
+    private func overallNoteCard(for note: PoemNote) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Use markdown rendering for overall notes
+            Text(renderMarkdown(note.noteContent ?? ""))
+                .font(.body)
+                .foregroundColor(Color(hex: "#333333"))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(showAllOverallNotes ? nil : 3)
+            
+            HStack {
+                Text(formatDate(note.modifiedAt ?? note.createdAt ?? Date()))
+                    .font(.caption2)
+                    .foregroundColor(Color(hex: "#999999"))
+                
+                Spacer()
+                
+                HStack(spacing: 12) {
+                    Button(action: {
+                        editingNoteForLine = nil
+                        editingOverallNote = note
+                        noteContent = note.noteContent ?? ""
+                        selectedColorHex = note.colorHex ?? "#F5F5F5"
+                        showingNoteEditor = true
+                    }) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 14))
+                            .foregroundColor(Color(hex: "#007AFF"))
+                    }
+                    
+                    Button(action: {
+                        noteToDelete = note
+                        showingDeleteConfirmation = true
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14))
+                            .foregroundColor(Color(hex: "#FF3B30"))
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(Color(hex: note.colorHex ?? "#F5F5F5"))
+        .cornerRadius(8)
+        .scaleEffect(pressingNoteId == note.id ? 0.95 : 1.0)
+        .animation(.easeOut(duration: 0.35), value: pressingNoteId)
+        .contentShape(Rectangle())
+        .onTapGesture { } // This prevents tap from interfering
+        .onLongPressGesture(
+            minimumDuration: 0.15,
+            maximumDistance: .infinity // Allow finger movement during long press
+        ) {
+            // Long press completed
+            print("LONG PRESS COMPLETED")
+            previewingNote = note
+            // Delay resetting the scale until preview is visible
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                pressingNoteId = nil
+            }
+            let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+            impactFeedback.impactOccurred()
+        } onPressingChanged: { pressing in
+            if pressing {
+                pressingNoteId = note.id
+            } else {
+                pressingNoteId = nil
+            }
+        }
     }
     
     // MARK: - Audio Notes Section
@@ -351,71 +567,74 @@ struct PoemDetailView: View {
                 HStack(spacing: 20) {
                     // Record button
                     Button(action: {
-                        if isRecording {
-                            stopRecording()
+                        if audioRecorder?.isRecording ?? false {
+                            audioRecorder?.stopRecording()
                         } else {
-                            startRecording()
+                            audioRecorder?.startRecording()
                         }
                     }) {
-                        Image(systemName: isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                        Image(systemName: (audioRecorder?.isRecording ?? false) ? "stop.circle.fill" : "mic.circle.fill")
                             .font(.system(size: 44))
-                            .foregroundColor(isRecording ? Color(hex: "#FF3B30") : Color(hex: "#007AFF"))
+                            .foregroundColor((audioRecorder?.isRecording ?? false) ? Color(hex: "#FF3B30") : Color(hex: "#007AFF"))
                     }
-                    .disabled(isPlaying)
+                    .disabled(audioPlayer?.isPlaying ?? false)
                     
-                    if audioNoteURL != nil {
+                    if audioRecorder?.audioNoteURL != nil {
                         // Rewind button
                         Button(action: {
-                            seekAudio(by: -10)
+                            audioPlayer?.seekAudio(by: -10)
                         }) {
                             Image(systemName: "gobackward.10")
                                 .font(.system(size: 32))
                                 .foregroundColor(Color(hex: "#007AFF"))
                         }
-                        .disabled(isRecording)
+                        .disabled(audioRecorder?.isRecording ?? false)
                         
                         // Play button
                         Button(action: {
-                            if isPlaying {
-                                stopPlaying()
-                            } else {
-                                playRecording()
+                            if audioPlayer?.isPlaying ?? false {
+                                audioPlayer?.stopPlaying()
+                            } else if let url = audioRecorder?.audioNoteURL {
+                                audioPlayer?.playRecording(from: url)
                             }
                         }) {
-                            Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            Image(systemName: (audioPlayer?.isPlaying ?? false) ? "pause.circle.fill" : "play.circle.fill")
                                 .font(.system(size: 44))
                                 .foregroundColor(Color(hex: "#34C759"))
                         }
-                        .disabled(isRecording)
+                        .disabled(audioRecorder?.isRecording ?? false)
                         
                         // Fast forward button
                         Button(action: {
-                            seekAudio(by: 10)
+                            audioPlayer?.seekAudio(by: 10)
                         }) {
                             Image(systemName: "goforward.10")
                                 .font(.system(size: 32))
                                 .foregroundColor(Color(hex: "#007AFF"))
                         }
-                        .disabled(isRecording)
+                        .disabled(audioRecorder?.isRecording ?? false)
                         
                         // Delete button
                         Button(action: {
-                            deleteRecording()
+                            Task {
+                                await audioRecorder?.deleteRecording()
+                                speechTranscriber?.clearTranscription()
+                            }
                         }) {
                             Image(systemName: "trash.circle.fill")
                                 .font(.system(size: 32))
                                 .foregroundColor(Color(hex: "#FF3B30"))
                         }
-                        .disabled(isRecording || isPlaying)
+                        .disabled((audioRecorder?.isRecording ?? false) || (audioPlayer?.isPlaying ?? false))
                     }
                 }
                 
                 // Recording time or status
-                if isRecording {
-                    Text("Recording... \(formatTime(recordingTime))")
+                if audioRecorder?.isRecording ?? false {
+                    Text("Recording... \(formatTime(audioRecorder?.recordingTime ?? 0))")
                         .font(.caption)
                         .foregroundColor(Color(hex: "#FF3B30"))
-                } else if isPlaying {
+                } else if audioPlayer?.isPlaying ?? false {
                     VStack(spacing: 8) {
                         // Progress bar with scrubbing
                         GeometryReader { geometry in
@@ -428,51 +647,51 @@ struct PoemDetailView: View {
                                 // Progress fill
                                 RoundedRectangle(cornerRadius: 2)
                                     .fill(Color(hex: "#34C759"))
-                                    .frame(width: geometry.size.width * playbackProgress, height: 4)
-                                    .animation(isDraggingScrubber ? nil : .linear(duration: 0.03), value: playbackProgress)
+                                    .frame(width: geometry.size.width * (audioPlayer?.playbackProgress ?? 0), height: 4)
+                                    .animation((audioPlayer?.isDraggingScrubber ?? false) ? nil : .linear(duration: 0.03), value: audioPlayer?.playbackProgress ?? 0)
                                 
                                 // Scrubber handle
                                 Circle()
                                     .fill(Color(hex: "#34C759"))
                                     .frame(width: 12, height: 12)
-                                    .offset(x: geometry.size.width * playbackProgress - 6)
-                                    .animation(isDraggingScrubber ? nil : .linear(duration: 0.03), value: playbackProgress)
+                                    .offset(x: geometry.size.width * (audioPlayer?.playbackProgress ?? 0) - 6)
+                                    .animation((audioPlayer?.isDraggingScrubber ?? false) ? nil : .linear(duration: 0.03), value: audioPlayer?.playbackProgress ?? 0)
                             }
                             .contentShape(Rectangle())
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onChanged { value in
-                                        isDraggingScrubber = true
+                                        audioPlayer?.isDraggingScrubber = true
                                         let progress = min(max(0, value.location.x / geometry.size.width), 1)
-                                        playbackProgress = progress
+                                        audioPlayer?.playbackProgress = progress
                                     }
                                     .onEnded { _ in
-                                        scrubToPosition(playbackProgress)
-                                        isDraggingScrubber = false
+                                        audioPlayer?.scrubToPosition(audioPlayer?.playbackProgress ?? 0)
+                                        audioPlayer?.isDraggingScrubber = false
                                     }
                             )
                         }
                         .frame(height: 12)
                         
                         HStack {
-                            Text(formatTime(recordingTime * playbackProgress))
+                            Text(formatTime((audioRecorder?.recordingTime ?? 0) * (audioPlayer?.playbackProgress ?? 0)))
                                 .font(.caption2)
                                 .foregroundColor(Color(hex: "#999999"))
                             
                             Spacer()
                             
-                            Text(formatTime(recordingTime))
+                            Text(formatTime(audioRecorder?.recordingTime ?? 0))
                                 .font(.caption2)
                                 .foregroundColor(Color(hex: "#999999"))
                         }
                     }
                     .padding(.horizontal, 40)
-                } else if audioNoteURL != nil {
+                } else if audioRecorder?.audioNoteURL != nil {
                     VStack(spacing: 4) {
                         Text("Audio note saved")
                             .font(.caption)
                             .foregroundColor(Color(hex: "#666666"))
-                        Text("Duration: \(formatTime(recordingTime))")
+                        Text("Duration: \(formatTime(audioRecorder?.recordingTime ?? 0))")
                             .font(.caption2)
                             .foregroundColor(Color(hex: "#999999"))
                     }
@@ -481,6 +700,56 @@ struct PoemDetailView: View {
                         .font(.caption)
                         .foregroundColor(Color(hex: "#999999"))
                         .italic()
+                }
+                
+                // Transcription display
+                if speechTranscriber?.isTranscribing ?? false {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Transcribing...")
+                            .font(.caption)
+                            .foregroundColor(Color(hex: "#007AFF"))
+                    }
+                    .padding(.top, 12)
+                }
+                
+                if !(speechTranscriber?.transcriptionText ?? "").isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "text.quote")
+                                .font(.caption)
+                                .foregroundColor(Color(hex: "#666666"))
+                            Text("Transcription")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundColor(Color(hex: "#666666"))
+                            Spacer()
+                        }
+                        
+                        Text(speechTranscriber?.transcriptionText ?? "")
+                            .font(.body)
+                            .foregroundColor(Color(hex: "#333333"))
+                            .padding(12)
+                            .background(Color.white)
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color(hex: "#E0E0E0"), lineWidth: 1)
+                            )
+                    }
+                    .padding(.top, 12)
+                }
+                
+                if let error = speechTranscriber?.transcriptionError {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.caption)
+                        Text(error)
+                            .font(.caption)
+                    }
+                    .foregroundColor(Color(hex: "#FF3B30"))
+                    .padding(.top, 8)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -551,13 +820,14 @@ struct PoemDetailView: View {
                 Spacer()
             }
             .padding(20)
-            .navigationTitle(editingNoteForLine != nil ? "Line Note" : "Overall Note")
+            .navigationTitle(editingNoteForLine != nil ? "Line Note" : (editingOverallNote != nil ? "Edit Overall Note" : "New Overall Note"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
                         noteContent = ""
                         selectedColorHex = "#F5F5F5"
+                        editingOverallNote = nil
                         showingNoteEditor = false
                     }
                 }
@@ -575,37 +845,6 @@ struct PoemDetailView: View {
     }
     
     // MARK: - Helper Functions
-    
-    private func lineHasNote(lineNumber: Int) -> Bool {
-        poemNotes.contains { $0.lineNumber == lineNumber }
-    }
-    
-    private func noteForLine(lineNumber: Int) -> PoemNote? {
-        poemNotes.first { $0.lineNumber == lineNumber }
-    }
-    
-    private func overallPoemHasNote() -> Bool {
-        poemNotes.contains { $0.lineNumber == nil }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-    
-    private func renderMarkdown(_ text: String) -> AttributedString {
-        do {
-            var options = AttributedString.MarkdownParsingOptions()
-            options.interpretedSyntax = .inlineOnlyPreservingWhitespace
-            return try AttributedString(markdown: text, options: options)
-        } catch {
-            // If markdown parsing fails, return plain text
-            return AttributedString(text)
-        }
-    }
-    
     private func loadNotes() async {
         isLoadingNotes = true
         do {
@@ -632,7 +871,7 @@ struct PoemDetailView: View {
         let lineContent = lineIndex < lines.count ? lines[lineIndex] : nil
         
         do {
-            if let existingNote = noteForLine(lineNumber: lineIndex) {
+            if let existingNote = noteForLine(lineNumber: lineIndex, in: poemNotes) {
                 // Update existing note with color
                 existingNote.colorHex = selectedColorHex
                 try await dataManager.updateNote(existingNote, content: noteContent)
@@ -663,12 +902,18 @@ struct PoemDetailView: View {
         guard !noteContent.isEmpty else { return }
         
         do {
-            // Check if overall note exists (lineNumber = nil)
-            if let existingNote = poemNotes.first(where: { $0.lineNumber == nil }) {
+            // Check if we're editing an existing note
+            if let existingNote = editingOverallNote {
                 // Update existing overall note
                 existingNote.colorHex = selectedColorHex
                 try await dataManager.updateNote(existingNote, content: noteContent)
             } else {
+                // Check if we've hit the limit
+                guard canAddMoreOverallNotes else {
+                    print("Cannot add more notes - limit of 10 reached")
+                    return
+                }
+                
                 // Create new overall note
                 _ = try await dataManager.createNote(
                     for: response,
@@ -685,170 +930,156 @@ struct PoemDetailView: View {
             // Clear and dismiss
             noteContent = ""
             selectedColorHex = "#F5F5F5"
+            editingOverallNote = nil
             showingNoteEditor = false
         } catch {
             print("Failed to save overall note: \(error)")
         }
     }
     
-    // MARK: - Audio Recording Functions
     
-    private func startRecording() {
-        let audioSession = AVAudioSession.sharedInstance()
-        
+    private func deleteNote(_ note: PoemNote) async {
         do {
-            try audioSession.setCategory(.playAndRecord, mode: .default)
-            try audioSession.setActive(true)
-            
-            let fileName = "\(response.id ?? UUID().uuidString)_audio.m4a"
-            let audioURL = AudioNote.documentsDirectory.appendingPathComponent(fileName)
-            
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 44100,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ]
-            
-            audioRecorder = try AVAudioRecorder(url: audioURL, settings: settings)
-            audioRecorder?.record()
-            
-            isRecording = true
-            recordingTime = 0
-            audioNoteURL = audioURL
-            
-            // Start timer to track recording time
-            recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                recordingTime += 1
-            }
+            try await dataManager.deleteNote(note)
+            await loadNotes()
+            noteToDelete = nil
         } catch {
-            print("Failed to start recording: \(error)")
+            print("Failed to delete note: \(error)")
         }
-    }
-    
-    private func stopRecording() {
-        audioRecorder?.stop()
-        isRecording = false
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        
-        // Save audio note to database
-        if let url = audioNoteURL {
-            Task {
-                do {
-                    _ = try await dataManager.createAudioNote(
-                        for: response,
-                        audioFileName: url.lastPathComponent,
-                        duration: recordingTime
-                    )
-                } catch {
-                    print("Failed to save audio note: \(error)")
-                }
-            }
-        }
-    }
-    
-    private func playRecording() {
-        guard let url = audioNoteURL else { return }
-        
-        do {
-            audioPlayer = try AVAudioPlayer(contentsOf: url)
-            audioPlayer?.delegate = AVAudioPlayerDelegateWrapper {
-                Task { @MainActor in
-                    self.isPlaying = false
-                    self.playbackProgress = 0
-                    self.playbackTimer?.invalidate()
-                    self.playbackTimer = nil
-                }
-            }
-            audioPlayer?.play()
-            isPlaying = true
-            playbackProgress = 0
-            
-            // Start timer to update progress with higher frequency for smooth animation
-            playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
-                if !self.isDraggingScrubber, let player = self.audioPlayer, player.duration > 0 {
-                    withAnimation(.linear(duration: 0.03)) {
-                        self.playbackProgress = player.currentTime / player.duration
-                    }
-                }
-            }
-        } catch {
-            print("Failed to play recording: \(error)")
-        }
-    }
-    
-    private func stopPlaying() {
-        audioPlayer?.stop()
-        isPlaying = false
-        playbackProgress = 0
-        playbackTimer?.invalidate()
-        playbackTimer = nil
-    }
-    
-    private func deleteRecording() {
-        if let url = audioNoteURL {
-            try? FileManager.default.removeItem(at: url)
-            audioNoteURL = nil
-            
-            // Delete from database
-            Task {
-                if let audioNote = try? await dataManager.fetchAudioNote(for: response) {
-                    try? await dataManager.deleteAudioNote(audioNote)
-                }
-            }
-        }
-    }
-    
-    private func formatTime(_ time: TimeInterval) -> String {
-        let minutes = Int(time) / 60
-        let seconds = Int(time) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
     }
     
     private func loadAudioNote() async {
         do {
             if let audioNote = try await dataManager.fetchAudioNote(for: response) {
-                audioNoteURL = audioNote.audioFileURL
-                recordingTime = audioNote.duration ?? 0
+                audioRecorder?.audioNoteURL = audioNote.audioFileURL
+                audioRecorder?.recordingTime = audioNote.duration ?? 0
+                speechTranscriber?.transcriptionText = audioNote.transcription ?? ""
             }
         } catch {
             print("Failed to load audio note: \(error)")
         }
     }
     
-    private func seekAudio(by seconds: TimeInterval) {
-        guard let player = audioPlayer else { return }
-        
-        let newTime = player.currentTime + seconds
-        let clampedTime = min(max(0, newTime), player.duration)
-        player.currentTime = clampedTime
-        
-        // Update progress immediately
-        if player.duration > 0 {
-            playbackProgress = clampedTime / player.duration
+}
+
+// MARK: - Note Preview Card
+
+struct NotePreviewCard: View {
+    let note: PoemNote
+    let onEdit: () -> Void
+    let onCopy: () -> Void
+    let onDelete: () -> Void
+    let onDismiss: () -> Void
+    
+    @State private var isContentLoaded = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Circle()
+                    .fill(Color(hex: note.colorHex ?? "#F5F5F5"))
+                    .frame(width: 12, height: 12)
+                
+                Text(formatDateCompact(note.modifiedAt ?? note.createdAt ?? Date()))
+                    .font(.caption)
+                    .foregroundColor(Color(hex: "#666666"))
+                
+                Spacer()
+                
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(Color(hex: "#999999"))
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+            
+            Divider()
+                .background(Color(hex: "#E0E0E0"))
+            
+            // Content with performance optimization
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if isContentLoaded {
+                        // Use the existing renderMarkdown function from helpers
+                        Text(PoemDetailView.renderMarkdown(note.noteContent ?? ""))
+                            .font(.body)
+                            .foregroundColor(Color(hex: "#1A1A1A"))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(20)
+                            .transition(.opacity)
+                    } else {
+                        // Skeleton loader for better perceived performance
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(0..<3) { _ in
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color(hex: "#F0F0F0"))
+                                    .frame(height: 20)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .frame(maxHeight: UIScreen.main.bounds.height * 0.5)
+            
+            Divider()
+                .background(Color(hex: "#E0E0E0"))
+            
+            // Action buttons
+            HStack(spacing: 0) {
+                actionButton(title: "Edit", icon: "pencil", color: "#007AFF", action: onEdit)
+                
+                Divider()
+                    .frame(width: 1, height: 44)
+                    .background(Color(hex: "#E0E0E0"))
+                
+                actionButton(title: "Copy", icon: "doc.on.clipboard", color: "#007AFF", action: onCopy)
+                
+                Divider()
+                    .frame(width: 1, height: 44)
+                    .background(Color(hex: "#E0E0E0"))
+                
+                actionButton(title: "Delete", icon: "trash", color: "#FF3B30", action: onDelete)
+            }
+            .frame(height: 50)
+        }
+        .background(Color.white)
+        .cornerRadius(16)
+        .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 5)
+        .padding(20)
+        .onAppear {
+            // Load content immediately for faster preview
+            withAnimation(.easeIn(duration: 0.1)) {
+                isContentLoaded = true
+            }
         }
     }
     
-    private func scrubToPosition(_ progress: Double) {
-        guard let player = audioPlayer else { return }
-        
-        let newTime = player.duration * progress
-        player.currentTime = newTime
-        // Don't update playbackProgress here - let the timer do it or it's already set by drag
+    @ViewBuilder
+    private func actionButton(title: String, icon: String, color: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                Text(title)
+                    .font(.system(size: 15, weight: .medium))
+            }
+            .foregroundColor(Color(hex: color))
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PlainButtonStyle())
     }
-}
-
-// Helper class for AVAudioPlayerDelegate
-class AVAudioPlayerDelegateWrapper: NSObject, AVAudioPlayerDelegate {
-    let completion: () -> Void
     
-    init(completion: @escaping () -> Void) {
-        self.completion = completion
-    }
-    
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        completion()
+    private func formatDateCompact(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
@@ -860,11 +1091,70 @@ class AVAudioPlayerDelegateWrapper: NSObject, AVAudioPlayerDelegate {
                 for: RequestEnhanced.self, ResponseEnhanced.self, PoemGroup.self, PoemRevision.self, PoemNote.self,
                 configurations: config
             )
+            
+            // Create sample response
+            let context = container.mainContext
+            let response = ResponseEnhanced(
+                content: """
+                Crisp leaves underfoot
+                Steam rises from coffee cup
+                Dawn breaks through the mist
+                
+                Golden light cascades
+                Through branches bare and reaching
+                Nature's quiet song
+                
+                Morning frost sparkles
+                On grass blades bent with dew drops
+                Autumn's gentle kiss
+                """,
+                isFavorite: true
+            )
+            context.insert(response)
+            
+            // Create two overall notes
+            let note1 = PoemNote(
+                responseId: response.id,
+                lineNumber: nil,
+                noteContent: "This haiku beautifully captures the essence of autumn mornings. The imagery of **crisp leaves** and **steam rising** creates a multisensory experience that immediately places the reader in the scene.",
+                colorHex: "#E3F2FD",
+                createdAt: Date().addingTimeInterval(-3600) // 1 hour ago
+            )
+            context.insert(note1)
+            
+            let note2 = PoemNote(
+                responseId: response.id,
+                lineNumber: nil,
+                noteContent: "Consider exploring the contrast between warmth and cold more deeply. The *coffee cup* provides warmth against the *frost*, which could be emphasized further in future revisions.",
+                colorHex: "#FFF3E0",
+                createdAt: Date().addingTimeInterval(-7200) // 2 hours ago
+            )
+            context.insert(note2)
+            
+            try context.save()
+            
             return container
         } catch {
             fatalError("Failed to create preview container")
         }
     }()
+    
+    let response = ResponseEnhanced(
+        content: """
+        Crisp leaves underfoot
+        Steam rises from coffee cup
+        Dawn breaks through the mist
+        
+        Golden light cascades
+        Through branches bare and reaching
+        Nature's quiet song
+        
+        Morning frost sparkles
+        On grass blades bent with dew drops
+        Autumn's gentle kiss
+        """,
+        isFavorite: true
+    )
     
     PoemDetailView(
         request: RequestEnhanced(
@@ -872,22 +1162,7 @@ class AVAudioPlayerDelegateWrapper: NSObject, AVAudioPlayerDelegate {
             poemType: PoemType.all[0],
             temperature: Temperature.all[0]
         ),
-        response: ResponseEnhanced(
-            content: """
-            Crisp leaves underfoot
-            Steam rises from coffee cup
-            Dawn breaks through the mist
-            
-            Golden light cascades
-            Through branches bare and reaching
-            Nature's quiet song
-            
-            Morning frost sparkles
-            On grass blades bent with dew drops
-            Autumn's gentle kiss
-            """,
-            isFavorite: true
-        )
+        response: response
     )
     .modelContainer(mockContainer)
     .environment(DataManager(

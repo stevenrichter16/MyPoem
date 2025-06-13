@@ -670,6 +670,16 @@ extension DataManager {
         print("✅ Deleted audio note")
     }
     
+    @MainActor
+    func updateAudioNote(_ audioNote: AudioNote) async throws {
+        audioNote.lastModified = Date()
+        audioNote.syncStatus = .pending
+        
+        try modelContext.save()
+        
+        print("✅ Updated audio note")
+    }
+    
     // MARK: - Poem Notes Management
     
     @MainActor
