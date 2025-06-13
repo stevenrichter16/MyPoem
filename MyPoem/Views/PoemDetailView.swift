@@ -26,6 +26,9 @@ struct PoemDetailView: View {
     @State private var showingDeleteConfirmation = false
     @State private var previewingNote: PoemNote? = nil
     @State private var pressingNoteId: String? = nil
+    @State private var isSaving = false
+    @State private var isKeyboardVisible = false
+    @FocusState private var isTextEditorFocused: Bool
     
     // Audio components
     @State private var audioRecorder: PoemAudioRecorder?
@@ -765,20 +768,21 @@ struct PoemDetailView: View {
     
     private var noteEditorSheet: some View {
         NavigationView {
-            VStack(alignment: .leading, spacing: 20) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
                 if let lineIndex = editingNoteForLine {
                     let lines = (response.content ?? "").components(separatedBy: .newlines)
                     if lineIndex < lines.count {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Line \(lineIndex + 1)")
                                 .font(.caption)
-                                .foregroundColor(Color(hex: "#666666"))
+                                .foregroundColor(.secondary)
                             
                             Text(lines[lineIndex])
                                 .font(.custom("Georgia", size: 16))
-                                .foregroundColor(Color(hex: "#1A1A1A"))
+                                .foregroundColor(.primary)
                                 .padding(12)
-                                .background(Color(hex: "#F5F5F5"))
+                                .background(Color(.secondarySystemFill))
                                 .cornerRadius(8)
                         }
                     }
@@ -787,11 +791,11 @@ struct PoemDetailView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Overall Poem Note")
                             .font(.caption)
-                            .foregroundColor(Color(hex: "#666666"))
+                            .foregroundColor(.secondary)
                         
                         Text("Supports markdown: **bold**, *italic*, ~~strikethrough~~")
                             .font(.caption2)
-                            .foregroundColor(Color(hex: "#999999"))
+                            .foregroundColor(Color(.tertiaryLabel))
                             .italic()
                     }
                 }
@@ -799,29 +803,108 @@ struct PoemDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Color")
                         .font(.caption)
-                        .foregroundColor(Color(hex: "#666666"))
+                        .foregroundColor(.secondary)
                     
                     ColorPaletteView(selectedColorHex: $selectedColorHex)
                 }
                 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Note")
-                        .font(.caption)
-                        .foregroundColor(Color(hex: "#666666"))
+                    HStack {
+                        Text("Note")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        Text("\(noteContent.count) characters")
+                            .font(.caption2)
+                            .foregroundColor(Color(.tertiaryLabel))
+                    }
                     
-                    TextEditor(text: $noteContent)
-                        .font(.body)
-                        .padding(8)
-                        .background(Color(hex: selectedColorHex))
-                        .cornerRadius(8)
-                        .frame(minHeight: 100)
+                    // Markdown formatting toolbar
+                    HStack(spacing: 12) {
+                        Group {
+                            Button(action: { wrapSelectedText(with: "**") }) {
+                                Label("Bold", systemImage: "bold")
+                                    .labelStyle(.iconOnly)
+                                    .font(.system(size: 16, weight: .medium))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            
+                            Button(action: { wrapSelectedText(with: "*") }) {
+                                Label("Italic", systemImage: "italic")
+                                    .labelStyle(.iconOnly)
+                                    .font(.system(size: 16, weight: .medium))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            
+                            Button(action: { wrapSelectedText(with: "~~") }) {
+                                Label("Strikethrough", systemImage: "strikethrough")
+                                    .labelStyle(.iconOnly)
+                                    .font(.system(size: 16, weight: .medium))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: { hideKeyboard() }) {
+                            Label("Dismiss Keyboard", systemImage: "keyboard.chevron.compact.down")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 16, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .opacity(isKeyboardVisible ? 1 : 0)
+                        .scaleEffect(isKeyboardVisible ? 1 : 0.8)
+                        .disabled(!isKeyboardVisible)
+                    }
+                    .tint(Color(.label))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isKeyboardVisible)
+                    
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: $noteContent)
+                            .font(.body)
+                            .padding(8)
+                            .background(Color(hex: selectedColorHex))
+                            .cornerRadius(8)
+                            .frame(minHeight: 100)
+                            .focused($isTextEditorFocused)
+                        
+                        // Placeholder text
+                        if noteContent.isEmpty {
+                            Text("Share your thoughts about this poem...")
+                                .font(.body)
+                                .foregroundColor(Color(.tertiaryLabel))
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 16)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 }
                 
-                Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
             }
-            .padding(20)
+            .background(Color(.systemGroupedBackground))
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                isKeyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                isKeyboardVisible = false
+            }
             .navigationTitle(editingNoteForLine != nil ? "Line Note" : (editingOverallNote != nil ? "Edit Overall Note" : "New Overall Note"))
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                // Set initial keyboard state
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    isTextEditorFocused = true
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Cancel") {
@@ -833,12 +916,21 @@ struct PoemDetailView: View {
                 }
                 
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Save") {
+                    Button(action: {
                         Task {
+                            isSaving = true
                             await saveNote()
+                            isSaving = false
+                        }
+                    }) {
+                        if isSaving {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                        } else {
+                            Text("Save")
                         }
                     }
-                    .disabled(noteContent.isEmpty)
+                    .disabled(noteContent.isEmpty || isSaving)
                 }
             }
         }
@@ -935,6 +1027,23 @@ struct PoemDetailView: View {
         } catch {
             print("Failed to save overall note: \(error)")
         }
+    }
+    
+    
+    // MARK: - Editor Helper Functions
+    
+    private func wrapSelectedText(with wrapper: String) {
+        // Simple implementation: adds wrapper at cursor position
+        // In production, you'd use UITextView delegation for proper selection
+        if !noteContent.isEmpty && !noteContent.hasSuffix(" ") && !noteContent.hasSuffix("\n") {
+            noteContent += " "
+        }
+        noteContent += wrapper + "text" + wrapper
+    }
+    
+    private func hideKeyboard() {
+        isTextEditorFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
     
     
